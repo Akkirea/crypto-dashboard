@@ -17,6 +17,14 @@ def _dt(ms: int) -> datetime:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
 
 
+def _decode_json_fields(row: dict[str, Any], *fields: str) -> dict[str, Any]:
+    for field in fields:
+        value = row.get(field)
+        if isinstance(value, str):
+            row[field] = json.loads(value)
+    return row
+
+
 class Database:
     def __init__(self) -> None:
         self.pool: Optional[asyncpg.Pool] = None
@@ -43,6 +51,83 @@ class Database:
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS symbols (
+                  id BIGSERIAL PRIMARY KEY,
+                  symbol TEXT NOT NULL UNIQUE,
+                  base_asset TEXT NOT NULL,
+                  quote_asset TEXT NOT NULL,
+                  exchange TEXT NOT NULL DEFAULT 'binance',
+                  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+
+                CREATE TABLE IF NOT EXISTS trades (
+                  id BIGSERIAL PRIMARY KEY,
+                  exchange TEXT NOT NULL,
+                  symbol TEXT NOT NULL,
+                  trade_id BIGINT NOT NULL,
+                  price NUMERIC(20, 8) NOT NULL,
+                  quantity NUMERIC(20, 8) NOT NULL,
+                  buyer_maker BOOLEAN,
+                  event_time TIMESTAMPTZ NOT NULL,
+                  trade_time TIMESTAMPTZ NOT NULL,
+                  received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  ingest_latency_ms INTEGER,
+                  UNIQUE(exchange, symbol, trade_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_trades_symbol_time
+                ON trades(symbol, trade_time DESC);
+
+                CREATE TABLE IF NOT EXISTS order_book_top (
+                  id BIGSERIAL PRIMARY KEY,
+                  exchange TEXT NOT NULL,
+                  symbol TEXT NOT NULL,
+                  bid_price NUMERIC(20, 8) NOT NULL,
+                  bid_quantity NUMERIC(20, 8) NOT NULL,
+                  ask_price NUMERIC(20, 8) NOT NULL,
+                  ask_quantity NUMERIC(20, 8) NOT NULL,
+                  spread NUMERIC(20, 8) NOT NULL,
+                  spread_bps NUMERIC(20, 8),
+                  event_time TIMESTAMPTZ,
+                  received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  ingest_latency_ms INTEGER
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_order_book_top_symbol_time
+                ON order_book_top(symbol, received_at DESC);
+
+                CREATE TABLE IF NOT EXISTS candles (
+                  id BIGSERIAL PRIMARY KEY,
+                  exchange TEXT NOT NULL,
+                  symbol TEXT NOT NULL,
+                  interval TEXT NOT NULL,
+                  open_time TIMESTAMPTZ NOT NULL,
+                  close_time TIMESTAMPTZ NOT NULL,
+                  open NUMERIC(20, 8) NOT NULL,
+                  high NUMERIC(20, 8) NOT NULL,
+                  low NUMERIC(20, 8) NOT NULL,
+                  close NUMERIC(20, 8) NOT NULL,
+                  volume NUMERIC(30, 8) NOT NULL,
+                  quote_volume NUMERIC(30, 8),
+                  trade_count INTEGER,
+                  is_closed BOOLEAN NOT NULL,
+                  received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  UNIQUE(exchange, symbol, interval, open_time)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_candles_symbol_interval_time
+                ON candles(symbol, interval, open_time DESC);
+
+                CREATE TABLE IF NOT EXISTS ingestion_events (
+                  id BIGSERIAL PRIMARY KEY,
+                  exchange TEXT NOT NULL,
+                  stream_name TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  message TEXT,
+                  occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+
                 CREATE TABLE IF NOT EXISTS analytics_events (
                   id BIGSERIAL PRIMARY KEY,
                   event_type TEXT NOT NULL,
@@ -52,7 +137,7 @@ class Database:
                   metric_name TEXT NOT NULL,
                   metric_value NUMERIC(30, 10),
                   baseline_value NUMERIC(30, 10),
-                  window TEXT,
+                  metric_window TEXT,
                   payload JSONB NOT NULL DEFAULT '{}'::jsonb,
                   occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 );
@@ -64,7 +149,7 @@ class Database:
                   id BIGSERIAL PRIMARY KEY,
                   metric_family TEXT NOT NULL,
                   exchange TEXT NOT NULL DEFAULT 'binance',
-                  window TEXT,
+                  metric_window TEXT,
                   payload JSONB NOT NULL,
                   computed_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 );
@@ -73,7 +158,14 @@ class Database:
                 ON analytics_snapshots(metric_family, computed_at DESC);
 
                 CREATE INDEX IF NOT EXISTS idx_analytics_snapshots_family_window_time
-                ON analytics_snapshots(metric_family, window, computed_at DESC);
+                ON analytics_snapshots(metric_family, metric_window, computed_at DESC);
+
+                INSERT INTO symbols(symbol, base_asset, quote_asset)
+                VALUES
+                  ('BTCUSDT', 'BTC', 'USDT'),
+                  ('ETHUSDT', 'ETH', 'USDT'),
+                  ('SOLUSDT', 'SOL', 'USDT')
+                ON CONFLICT (symbol) DO NOTHING;
                 """
             )
 
@@ -185,7 +277,7 @@ class Database:
             return
         await self.pool.execute(
             """
-            INSERT INTO analytics_snapshots(metric_family, exchange, window, payload)
+            INSERT INTO analytics_snapshots(metric_family, exchange, metric_window, payload)
             VALUES ($1, 'binance', $2, $3::jsonb)
             """,
             metric_family,
@@ -199,7 +291,7 @@ class Database:
         async with self.pool.acquire() as conn:
             await conn.executemany(
                 """
-                INSERT INTO analytics_snapshots(metric_family, exchange, window, payload)
+                INSERT INTO analytics_snapshots(metric_family, exchange, metric_window, payload)
                 VALUES ($1, $2, $3, $4::jsonb)
                 """,
                 [
@@ -221,7 +313,7 @@ class Database:
                 """
                 INSERT INTO analytics_events(
                   event_type, exchange, symbol, severity, metric_name,
-                  metric_value, baseline_value, window, payload
+                  metric_value, baseline_value, metric_window, payload
                 )
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
                 """,
@@ -247,14 +339,14 @@ class Database:
         rows = await self.pool.fetch(
             """
             SELECT event_type, exchange, symbol, severity, metric_name, metric_value,
-                   baseline_value, window, payload, occurred_at
+                   baseline_value, metric_window AS window, payload, occurred_at
             FROM analytics_events
             ORDER BY occurred_at DESC
             LIMIT $1
             """,
             limit,
         )
-        return [dict(row) for row in rows]
+        return [_decode_json_fields(dict(row), "payload") for row in rows]
 
     async def fetch_latest_analytics_snapshot(
         self, metric_family: str = "summary"
@@ -263,7 +355,7 @@ class Database:
             return None
         row = await self.pool.fetchrow(
             """
-            SELECT metric_family, exchange, window, payload, computed_at
+            SELECT metric_family, exchange, metric_window AS window, payload, computed_at
             FROM analytics_snapshots
             WHERE metric_family = $1
             ORDER BY computed_at DESC
@@ -271,7 +363,7 @@ class Database:
             """,
             metric_family,
         )
-        return dict(row) if row else None
+        return _decode_json_fields(dict(row), "payload") if row else None
 
     async def fetch_analytics_history(
         self,
@@ -284,9 +376,9 @@ class Database:
         if window:
             rows = await self.pool.fetch(
                 """
-                SELECT metric_family, exchange, window, payload, computed_at
+                SELECT metric_family, exchange, metric_window AS window, payload, computed_at
                 FROM analytics_snapshots
-                WHERE metric_family = $1 AND window = $2
+                WHERE metric_family = $1 AND metric_window = $2
                 ORDER BY computed_at DESC
                 LIMIT $3
                 """,
@@ -297,7 +389,7 @@ class Database:
         else:
             rows = await self.pool.fetch(
                 """
-                SELECT metric_family, exchange, window, payload, computed_at
+                SELECT metric_family, exchange, metric_window AS window, payload, computed_at
                 FROM analytics_snapshots
                 WHERE metric_family = $1
                 ORDER BY computed_at DESC
@@ -306,4 +398,4 @@ class Database:
                 metric_family,
                 limit,
             )
-        return [dict(row) for row in reversed(rows)]
+        return [_decode_json_fields(dict(row), "payload") for row in reversed(rows)]

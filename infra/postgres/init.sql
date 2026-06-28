@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS analytics_events (
   metric_name TEXT NOT NULL,
   metric_value NUMERIC(30, 10),
   baseline_value NUMERIC(30, 10),
-  window TEXT,
+  metric_window TEXT,
   payload JSONB NOT NULL DEFAULT '{}'::jsonb,
   occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -93,13 +93,16 @@ CREATE TABLE IF NOT EXISTS analytics_snapshots (
   id BIGSERIAL PRIMARY KEY,
   metric_family TEXT NOT NULL,
   exchange TEXT NOT NULL DEFAULT 'binance',
-  window TEXT,
+  metric_window TEXT,
   payload JSONB NOT NULL,
   computed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_analytics_snapshots_family_time
 ON analytics_snapshots(metric_family, computed_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_analytics_snapshots_family_window_time
+ON analytics_snapshots(metric_family, metric_window, computed_at DESC);
 
 INSERT INTO symbols(symbol, base_asset, quote_asset)
 VALUES

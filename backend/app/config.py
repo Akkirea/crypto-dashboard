@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     trend_alert_abs_score: float = 5.0
     volume_zscore_alert: float = 3.0
     liquidity_collapse_alert_pct: float = 50.0
+    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -44,6 +45,10 @@ class Settings(BaseSettings):
             for item in self.volatility_alert_regimes.split(",")
             if item.strip()
         }
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
 
 
 settings = Settings()

@@ -109,10 +109,11 @@ async def _publish_health(state: MarketState, broadcaster: Broadcaster) -> None:
 
 
 app = FastAPI(title="Crypto Market Dashboard Backend", lifespan=lifespan)
+cors_origins = settings.cors_origin_list
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_credentials="*" not in cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
