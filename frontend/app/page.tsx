@@ -19,10 +19,10 @@ import { OrderBook } from "@/components/OrderBook";
 import { PriceTicker } from "@/components/PriceTicker";
 import { TradeTape } from "@/components/TradeTape";
 import { VolumePanel } from "@/components/VolumePanel";
+import { backendWsUrl } from "@/lib/backendConfig";
 import { BookTopEvent, CandleEvent, HealthEvent, MarketMessage, SymbolName, TradeEvent } from "@/lib/types";
 
 const SYMBOLS: SymbolName[] = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
-const WS_URL = process.env.NEXT_PUBLIC_BACKEND_WS_URL ?? "ws://localhost:8000/ws/market";
 
 type CandlesBySymbol = Partial<Record<SymbolName, Partial<Record<"1m" | "5m", CandleEvent[]>>>>;
 
@@ -44,7 +44,7 @@ export default function DashboardPage() {
     function connect() {
       if (closed) return;
       setSocketState("connecting");
-      socket = new WebSocket(WS_URL);
+      socket = new WebSocket(backendWsUrl());
 
       socket.onopen = () => {
         retryMs = 1000;

@@ -12,9 +12,8 @@ import { VolumeAnomalyPanel } from "@/components/analytics/VolumeAnomalyPanel";
 import { LiquidityMonitor } from "@/components/analytics/LiquidityMonitor";
 import { HistoricalAnalyticsChart } from "@/components/analytics/HistoricalAnalyticsChart";
 import { AnalyticsEvent, AnalyticsHistorySnapshot, AnalyticsSummary } from "@/lib/analyticsTypes";
+import { backendHttpUrl } from "@/lib/backendConfig";
 import { fmtPrice } from "@/lib/format";
-
-const HTTP_URL = process.env.NEXT_PUBLIC_BACKEND_HTTP_URL ?? "http://localhost:8000";
 
 export default function AnalyticsPage() {
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
@@ -27,11 +26,12 @@ export default function AnalyticsPage() {
 
     async function load() {
       try {
-        const response = await fetch(`${HTTP_URL}/api/analytics/summary`, { cache: "no-store" });
-        const eventsResponse = await fetch(`${HTTP_URL}/api/analytics/events?limit=25`, {
+        const httpUrl = backendHttpUrl();
+        const response = await fetch(`${httpUrl}/api/analytics/summary`, { cache: "no-store" });
+        const eventsResponse = await fetch(`${httpUrl}/api/analytics/events?limit=25`, {
           cache: "no-store"
         });
-        const historyResponse = await fetch(`${HTTP_URL}/api/analytics/history?metric_family=summary&limit=120`, {
+        const historyResponse = await fetch(`${httpUrl}/api/analytics/history?metric_family=summary&limit=120`, {
           cache: "no-store"
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
