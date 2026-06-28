@@ -20,6 +20,7 @@ export default function AnalyticsPage() {
   const [events, setEvents] = useState<AnalyticsEvent[]>([]);
   const [history, setHistory] = useState<AnalyticsHistorySnapshot[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [apiUrl, setApiUrl] = useState<string>("");
 
   useEffect(() => {
     let closed = false;
@@ -27,35 +28,60 @@ export default function AnalyticsPage() {
     async function load() {
       try {
         const httpUrl = backendHttpUrl();
+        if (!closed) setApiUrl(httpUrl);
         const response = await fetch(`${httpUrl}/api/analytics/summary`, { cache: "no-store" });
-        const eventsResponse = await fetch(`${httpUrl}/api/analytics/events?limit=25`, {
-          cache: "no-store"
-        });
-        const historyResponse = await fetch(`${httpUrl}/api/analytics/history?metric_family=summary&limit=120`, {
-          cache: "no-store"
-        });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        if (!eventsResponse.ok) throw new Error(`events HTTP ${eventsResponse.status}`);
-        if (!historyResponse.ok) throw new Error(`history HTTP ${historyResponse.status}`);
         const data = (await response.json()) as AnalyticsSummary;
-        const eventData = (await eventsResponse.json()) as AnalyticsEvent[];
-        const historyData = (await historyResponse.json()) as AnalyticsHistorySnapshot[];
         if (!closed) {
           setSummary(data);
-          setEvents(eventData);
-          setHistory(historyData);
           setError(null);
         }
       } catch (caught) {
-        if (!closed) setError(caught instanceof Error ? caught.message : "analytics unavailable");
+        if (!closed) {
+          setError(caught instanceof Error ? caught.message : "analytics unavailable");
+        }
+      }
+    }
+
+    async function loadEvents() {
+      try {
+        const httpUrl = backendHttpUrl();
+        const response = await fetch(`${httpUrl}/api/analytics/events?limit=25`, {
+          cache: "no-store"
+        });
+        if (!response.ok) return;
+        const data = (await response.json()) as AnalyticsEvent[];
+        if (!closed) setEvents(data);
+      } catch (caught) {
+        console.warn("analytics events unavailable", caught);
+      }
+    }
+
+    async function loadHistory() {
+      try {
+        const httpUrl = backendHttpUrl();
+        const response = await fetch(`${httpUrl}/api/analytics/history?metric_family=summary&limit=30`, {
+          cache: "no-store"
+        });
+        if (!response.ok) return;
+        const data = (await response.json()) as AnalyticsHistorySnapshot[];
+        if (!closed) setHistory(data);
+      } catch (caught) {
+        console.warn("analytics history unavailable", caught);
       }
     }
 
     load();
-    const interval = window.setInterval(load, 3000);
+    loadEvents();
+    loadHistory();
+    const summaryInterval = window.setInterval(load, 3000);
+    const eventsInterval = window.setInterval(loadEvents, 10000);
+    const historyInterval = window.setInterval(loadHistory, 60000);
     return () => {
       closed = true;
-      window.clearInterval(interval);
+      window.clearInterval(summaryInterval);
+      window.clearInterval(eventsInterval);
+      window.clearInterval(historyInterval);
     };
   }, []);
 
@@ -88,7 +114,8 @@ export default function AnalyticsPage() {
 
       {error ? (
         <section className="rounded-lg border border-sell/30 bg-sell/10 p-4 text-sm text-sell">
-          Analytics API unavailable: {error}
+          <div>Analytics API unavailable: {error}</div>
+          <div className="mt-2 break-all text-xs text-slate-400">Endpoint: {apiUrl || "unknown"}</div>
         </section>
       ) : null}
 
