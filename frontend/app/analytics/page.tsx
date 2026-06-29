@@ -11,7 +11,16 @@ import { VolatilityRegimePanel } from "@/components/analytics/VolatilityRegimePa
 import { VolumeAnomalyPanel } from "@/components/analytics/VolumeAnomalyPanel";
 import { LiquidityMonitor } from "@/components/analytics/LiquidityMonitor";
 import { HistoricalAnalyticsChart } from "@/components/analytics/HistoricalAnalyticsChart";
-import { AnalyticsEvent, AnalyticsHistorySnapshot, AnalyticsSummary } from "@/lib/analyticsTypes";
+import { OrderBookRollupChart } from "@/components/analytics/OrderBookRollupChart";
+import { StorageOpsPanel } from "@/components/analytics/StorageOpsPanel";
+import {
+  AnalyticsEvent,
+  AnalyticsHistorySnapshot,
+  AnalyticsStorageSummary,
+  AnalyticsSummary,
+  DatabaseHealth,
+  OrderBookRollupPoint
+} from "@/lib/analyticsTypes";
 import { backendHttpUrl } from "@/lib/backendConfig";
 import { fmtPrice } from "@/lib/format";
 
@@ -19,6 +28,10 @@ export default function AnalyticsPage() {
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
   const [events, setEvents] = useState<AnalyticsEvent[]>([]);
   const [history, setHistory] = useState<AnalyticsHistorySnapshot[]>([]);
+  const [storage, setStorage] = useState<AnalyticsStorageSummary | null>(null);
+  const [databaseHealth, setDatabaseHealth] = useState<DatabaseHealth | null>(null);
+  const [rollups, setRollups] = useState<OrderBookRollupPoint[]>([]);
+  const [rollupSymbol, setRollupSymbol] = useState("BTCUSDT");
   const [error, setError] = useState<string | null>(null);
   const [apiUrl, setApiUrl] = useState<string>("");
 
@@ -71,19 +84,68 @@ export default function AnalyticsPage() {
       }
     }
 
+    async function loadStorage() {
+      try {
+        const httpUrl = backendHttpUrl();
+        const [healthResponse, storageResponse] = await Promise.all([
+          fetch(`${httpUrl}/health/database`, { cache: "no-store" }),
+          fetch(`${httpUrl}/api/analytics/storage`, { cache: "no-store" })
+        ]);
+        if (healthResponse.ok) {
+          const data = (await healthResponse.json()) as DatabaseHealth;
+          if (!closed) setDatabaseHealth(data);
+        }
+        if (storageResponse.ok) {
+          const data = (await storageResponse.json()) as AnalyticsStorageSummary;
+          if (!closed) setStorage(data);
+        }
+      } catch (caught) {
+        console.warn("storage analytics unavailable", caught);
+      }
+    }
+
     load();
     loadEvents();
     loadHistory();
+    loadStorage();
     const summaryInterval = window.setInterval(load, 3000);
     const eventsInterval = window.setInterval(loadEvents, 10000);
     const historyInterval = window.setInterval(loadHistory, 60000);
+    const storageInterval = window.setInterval(loadStorage, 30000);
     return () => {
       closed = true;
       window.clearInterval(summaryInterval);
       window.clearInterval(eventsInterval);
       window.clearInterval(historyInterval);
+      window.clearInterval(storageInterval);
     };
   }, []);
+
+  useEffect(() => {
+    let closed = false;
+
+    async function loadRollups() {
+      try {
+        const httpUrl = backendHttpUrl();
+        const response = await fetch(
+          `${httpUrl}/api/analytics/rollups/order-book?symbol=${rollupSymbol}&limit=720`,
+          { cache: "no-store" }
+        );
+        if (!response.ok) return;
+        const data = (await response.json()) as OrderBookRollupPoint[];
+        if (!closed) setRollups(data);
+      } catch (caught) {
+        console.warn("order book rollups unavailable", caught);
+      }
+    }
+
+    loadRollups();
+    const interval = window.setInterval(loadRollups, 60000);
+    return () => {
+      closed = true;
+      window.clearInterval(interval);
+    };
+  }, [rollupSymbol]);
 
   const trendLeader = summary?.leaders.trend;
   const tightest = summary?.leaders.tightest_spread;
@@ -122,11 +184,17 @@ export default function AnalyticsPage() {
       <section className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(320px,0.8fr)]">
         <div className="grid gap-4">
           <HistoricalAnalyticsChart snapshots={history} />
+          <OrderBookRollupChart
+            points={rollups}
+            symbol={rollupSymbol}
+            onSymbolChange={setRollupSymbol}
+          />
           <TrendRankTable rows={summary?.trend_rankings ?? []} />
           <VolumeAnomalyPanel rows={summary?.volume_anomalies ?? []} />
           <AnalyticsEventFeed events={events} />
         </div>
         <div className="grid gap-4">
+          <StorageOpsPanel health={databaseHealth} storage={storage} />
           <SpreadRankingTable rows={summary?.spread_rankings ?? []} />
           <CrossExchangePanel rows={summary?.cross_exchange ?? []} />
           <LiquidityMonitor rows={summary?.liquidity ?? []} />

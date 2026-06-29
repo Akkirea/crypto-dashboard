@@ -136,3 +136,63 @@ export type AnalyticsHistorySnapshot = {
   };
   computed_at: number | string;
 };
+
+export type NumericValue = number | string | null;
+
+export type DatabaseTableStat = {
+  table_name: string;
+  estimated_rows: number;
+  total_bytes: number;
+};
+
+export type OrderBookRollupCoverage = {
+  exchange: string;
+  symbol: string;
+  bucket_minutes: number;
+  bucket_count: number;
+  first_bucket: string;
+  last_bucket: string;
+};
+
+export type AnalyticsStorageSummary = {
+  tables: DatabaseTableStat[];
+  rollups: OrderBookRollupCoverage[];
+};
+
+export type DatabaseHealth = {
+  status: string;
+  connected: boolean;
+  retention: {
+    enabled: boolean;
+    interval_seconds: number;
+    delete_limit: number;
+    order_book_persist_interval_ms: number;
+    rollups: {
+      enabled: boolean;
+      interval_seconds: number;
+      lookback_hours: number;
+      order_book_bucket_minutes: number;
+    };
+    tables: Record<string, string>;
+  };
+  tables: DatabaseTableStat[];
+};
+
+export type OrderBookRollupPoint = {
+  exchange: string;
+  symbol: string;
+  bucket_start: string;
+  bucket_minutes: number;
+  sample_count: number;
+  avg_bid_price: NumericValue;
+  avg_ask_price: NumericValue;
+  avg_mid_price: NumericValue;
+  avg_spread_bps: NumericValue;
+  min_spread_bps: NumericValue;
+  max_spread_bps: NumericValue;
+  avg_bid_quantity: NumericValue;
+  avg_ask_quantity: NumericValue;
+  avg_top_bid_notional: NumericValue;
+  avg_top_ask_notional: NumericValue;
+  updated_at: string;
+};
