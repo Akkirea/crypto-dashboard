@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 
 CREATE INDEX IF NOT EXISTS idx_trades_symbol_time ON trades(symbol, trade_time DESC);
+CREATE INDEX IF NOT EXISTS idx_trades_trade_time ON trades(trade_time);
 
 CREATE TABLE IF NOT EXISTS order_book_top (
   id BIGSERIAL PRIMARY KEY,
@@ -41,6 +42,32 @@ CREATE TABLE IF NOT EXISTS order_book_top (
 );
 
 CREATE INDEX IF NOT EXISTS idx_order_book_top_symbol_time ON order_book_top(symbol, received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_order_book_top_received_at ON order_book_top(received_at);
+
+CREATE TABLE IF NOT EXISTS order_book_rollups (
+  id BIGSERIAL PRIMARY KEY,
+  exchange TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  bucket_start TIMESTAMPTZ NOT NULL,
+  bucket_minutes INTEGER NOT NULL DEFAULT 1,
+  sample_count INTEGER NOT NULL,
+  avg_bid_price NUMERIC(20, 8),
+  avg_ask_price NUMERIC(20, 8),
+  avg_mid_price NUMERIC(20, 8),
+  avg_spread_bps NUMERIC(20, 8),
+  min_spread_bps NUMERIC(20, 8),
+  max_spread_bps NUMERIC(20, 8),
+  avg_bid_quantity NUMERIC(30, 8),
+  avg_ask_quantity NUMERIC(30, 8),
+  avg_top_bid_notional NUMERIC(30, 8),
+  avg_top_ask_notional NUMERIC(30, 8),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(exchange, symbol, bucket_minutes, bucket_start)
+);
+
+CREATE INDEX IF NOT EXISTS idx_order_book_rollups_symbol_time
+ON order_book_rollups(symbol, bucket_start DESC);
 
 CREATE TABLE IF NOT EXISTS candles (
   id BIGSERIAL PRIMARY KEY,
@@ -62,6 +89,7 @@ CREATE TABLE IF NOT EXISTS candles (
 );
 
 CREATE INDEX IF NOT EXISTS idx_candles_symbol_interval_time ON candles(symbol, interval, open_time DESC);
+CREATE INDEX IF NOT EXISTS idx_candles_open_time ON candles(open_time);
 
 CREATE TABLE IF NOT EXISTS ingestion_events (
   id BIGSERIAL PRIMARY KEY,
@@ -88,6 +116,8 @@ CREATE TABLE IF NOT EXISTS analytics_events (
 
 CREATE INDEX IF NOT EXISTS idx_analytics_events_symbol_time
 ON analytics_events(symbol, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_analytics_events_occurred_at
+ON analytics_events(occurred_at);
 
 CREATE TABLE IF NOT EXISTS analytics_snapshots (
   id BIGSERIAL PRIMARY KEY,
@@ -100,6 +130,8 @@ CREATE TABLE IF NOT EXISTS analytics_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_analytics_snapshots_family_time
 ON analytics_snapshots(metric_family, computed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_analytics_snapshots_computed_at
+ON analytics_snapshots(computed_at);
 
 CREATE INDEX IF NOT EXISTS idx_analytics_snapshots_family_window_time
 ON analytics_snapshots(metric_family, metric_window, computed_at DESC);

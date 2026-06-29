@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     analytics_snapshots_retention_days: int = 30
     retention_delete_limit: int = 100000
     order_book_persist_interval_ms: int = 1000
+    rollups_enabled: bool = True
+    rollup_initial_delay_seconds: int = 45
+    rollup_interval_seconds: int = 300
+    rollup_lookback_hours: int = 30
+    order_book_rollup_bucket_minutes: int = 1
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

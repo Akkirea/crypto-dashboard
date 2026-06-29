@@ -90,6 +90,9 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_trades_symbol_time
                 ON trades(symbol, trade_time DESC);
 
+                CREATE INDEX IF NOT EXISTS idx_trades_trade_time
+                ON trades(trade_time);
+
                 CREATE TABLE IF NOT EXISTS order_book_top (
                   id BIGSERIAL PRIMARY KEY,
                   exchange TEXT NOT NULL,
@@ -107,6 +110,34 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_order_book_top_symbol_time
                 ON order_book_top(symbol, received_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_order_book_top_received_at
+                ON order_book_top(received_at);
+
+                CREATE TABLE IF NOT EXISTS order_book_rollups (
+                  id BIGSERIAL PRIMARY KEY,
+                  exchange TEXT NOT NULL,
+                  symbol TEXT NOT NULL,
+                  bucket_start TIMESTAMPTZ NOT NULL,
+                  bucket_minutes INTEGER NOT NULL DEFAULT 1,
+                  sample_count INTEGER NOT NULL,
+                  avg_bid_price NUMERIC(20, 8),
+                  avg_ask_price NUMERIC(20, 8),
+                  avg_mid_price NUMERIC(20, 8),
+                  avg_spread_bps NUMERIC(20, 8),
+                  min_spread_bps NUMERIC(20, 8),
+                  max_spread_bps NUMERIC(20, 8),
+                  avg_bid_quantity NUMERIC(30, 8),
+                  avg_ask_quantity NUMERIC(30, 8),
+                  avg_top_bid_notional NUMERIC(30, 8),
+                  avg_top_ask_notional NUMERIC(30, 8),
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  UNIQUE(exchange, symbol, bucket_minutes, bucket_start)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_order_book_rollups_symbol_time
+                ON order_book_rollups(symbol, bucket_start DESC);
 
                 CREATE TABLE IF NOT EXISTS candles (
                   id BIGSERIAL PRIMARY KEY,
@@ -129,6 +160,9 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_candles_symbol_interval_time
                 ON candles(symbol, interval, open_time DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_candles_open_time
+                ON candles(open_time);
 
                 CREATE TABLE IF NOT EXISTS ingestion_events (
                   id BIGSERIAL PRIMARY KEY,
@@ -156,6 +190,9 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_analytics_events_symbol_time
                 ON analytics_events(symbol, occurred_at DESC);
 
+                CREATE INDEX IF NOT EXISTS idx_analytics_events_occurred_at
+                ON analytics_events(occurred_at);
+
                 CREATE TABLE IF NOT EXISTS analytics_snapshots (
                   id BIGSERIAL PRIMARY KEY,
                   metric_family TEXT NOT NULL,
@@ -167,6 +204,9 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_analytics_snapshots_family_time
                 ON analytics_snapshots(metric_family, computed_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_analytics_snapshots_computed_at
+                ON analytics_snapshots(computed_at);
 
                 CREATE INDEX IF NOT EXISTS idx_analytics_snapshots_family_window_time
                 ON analytics_snapshots(metric_family, metric_window, computed_at DESC);
@@ -430,6 +470,7 @@ class Database:
             WHERE relname IN (
               'trades',
               'order_book_top',
+              'order_book_rollups',
               'candles',
               'analytics_events',
               'analytics_snapshots'
@@ -438,6 +479,145 @@ class Database:
             """
         )
         return [dict(row) for row in rows]
+
+    async def fetch_storage_summary(self) -> dict[str, Any]:
+        stats = await self.table_stats()
+        if not self.pool:
+            return {"tables": stats, "rollups": []}
+        rows = await self.pool.fetch(
+            """
+            SELECT
+              exchange,
+              symbol,
+              bucket_minutes,
+              count(*)::bigint AS bucket_count,
+              min(bucket_start) AS first_bucket,
+              max(bucket_start) AS last_bucket
+            FROM order_book_rollups
+            GROUP BY exchange, symbol, bucket_minutes
+            ORDER BY exchange, symbol, bucket_minutes
+            """
+        )
+        return {
+            "tables": stats,
+            "rollups": [dict(row) for row in rows],
+        }
+
+    async def refresh_order_book_rollups(self) -> dict[str, int]:
+        if not self.pool or not settings.rollups_enabled:
+            return {}
+        bucket_minutes = settings.order_book_rollup_bucket_minutes
+        if bucket_minutes != 1:
+            logger.warning("only 1-minute order book rollups are currently supported")
+            bucket_minutes = 1
+
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                INSERT INTO order_book_rollups (
+                  exchange,
+                  symbol,
+                  bucket_start,
+                  bucket_minutes,
+                  sample_count,
+                  avg_bid_price,
+                  avg_ask_price,
+                  avg_mid_price,
+                  avg_spread_bps,
+                  min_spread_bps,
+                  max_spread_bps,
+                  avg_bid_quantity,
+                  avg_ask_quantity,
+                  avg_top_bid_notional,
+                  avg_top_ask_notional,
+                  updated_at
+                )
+                SELECT
+                  exchange,
+                  symbol,
+                  date_trunc('minute', received_at) AS bucket_start,
+                  $1::int AS bucket_minutes,
+                  count(*)::int AS sample_count,
+                  avg(bid_price),
+                  avg(ask_price),
+                  avg((bid_price + ask_price) / 2),
+                  avg(spread_bps),
+                  min(spread_bps),
+                  max(spread_bps),
+                  avg(bid_quantity),
+                  avg(ask_quantity),
+                  avg(bid_price * bid_quantity),
+                  avg(ask_price * ask_quantity),
+                  now()
+                FROM order_book_top
+                WHERE received_at >= now() - ($2::int * interval '1 hour')
+                  AND received_at < date_trunc('minute', now())
+                GROUP BY exchange, symbol, date_trunc('minute', received_at)
+                ON CONFLICT (exchange, symbol, bucket_minutes, bucket_start)
+                DO UPDATE SET
+                  sample_count = EXCLUDED.sample_count,
+                  avg_bid_price = EXCLUDED.avg_bid_price,
+                  avg_ask_price = EXCLUDED.avg_ask_price,
+                  avg_mid_price = EXCLUDED.avg_mid_price,
+                  avg_spread_bps = EXCLUDED.avg_spread_bps,
+                  min_spread_bps = EXCLUDED.min_spread_bps,
+                  max_spread_bps = EXCLUDED.max_spread_bps,
+                  avg_bid_quantity = EXCLUDED.avg_bid_quantity,
+                  avg_ask_quantity = EXCLUDED.avg_ask_quantity,
+                  avg_top_bid_notional = EXCLUDED.avg_top_bid_notional,
+                  avg_top_ask_notional = EXCLUDED.avg_top_ask_notional,
+                  updated_at = now()
+                """,
+                bucket_minutes,
+                settings.rollup_lookback_hours,
+            )
+        return {"order_book_rollups": int(result.rsplit(" ", 1)[-1])}
+
+    async def fetch_order_book_rollups(
+        self,
+        symbol: Optional[str] = None,
+        exchange: Optional[str] = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        if not self.pool:
+            return []
+        conditions = []
+        values: list[Any] = []
+        if symbol:
+            values.append(symbol.upper())
+            conditions.append(f"symbol = ${len(values)}")
+        if exchange:
+            values.append(exchange.lower())
+            conditions.append(f"exchange = ${len(values)}")
+        values.append(limit)
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        rows = await self.pool.fetch(
+            f"""
+            SELECT
+              exchange,
+              symbol,
+              bucket_start,
+              bucket_minutes,
+              sample_count,
+              avg_bid_price,
+              avg_ask_price,
+              avg_mid_price,
+              avg_spread_bps,
+              min_spread_bps,
+              max_spread_bps,
+              avg_bid_quantity,
+              avg_ask_quantity,
+              avg_top_bid_notional,
+              avg_top_ask_notional,
+              updated_at
+            FROM order_book_rollups
+            {where_clause}
+            ORDER BY bucket_start DESC
+            LIMIT ${len(values)}
+            """,
+            *values,
+        )
+        return [dict(row) for row in reversed(rows)]
 
     async def apply_retention(self) -> dict[str, int]:
         if not self.pool or not settings.retention_enabled:

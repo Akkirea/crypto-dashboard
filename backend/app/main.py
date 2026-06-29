@@ -53,6 +53,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     health_task = asyncio.create_task(_publish_health(state, broadcaster))
     analytics_task = asyncio.create_task(analytics_worker.run())
     retention_task = asyncio.create_task(_run_retention(db))
+    rollup_task = asyncio.create_task(_run_rollups(db))
 
     app.state.market_state = state
     app.state.broadcaster = broadcaster
@@ -85,6 +86,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         health_task.cancel()
         analytics_task.cancel()
         retention_task.cancel()
+        rollup_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await ingest_task
         if coinbase_task is not None:
@@ -102,6 +104,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await analytics_task
         with contextlib.suppress(asyncio.CancelledError):
             await retention_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await rollup_task
         await db.close()
 
 
@@ -124,6 +128,20 @@ async def _run_retention(db: Database) -> None:
             raise
         except Exception:
             logger.exception("retention cleanup failed")
+
+
+async def _run_rollups(db: Database) -> None:
+    await asyncio.sleep(settings.rollup_initial_delay_seconds)
+    while True:
+        try:
+            refreshed = await db.refresh_order_book_rollups()
+            if refreshed:
+                logger.info("order book rollups refreshed", extra={"refreshed": refreshed})
+            await asyncio.sleep(settings.rollup_interval_seconds)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("order book rollup refresh failed")
 
 
 app = FastAPI(title="Crypto Market Dashboard Backend", lifespan=lifespan)

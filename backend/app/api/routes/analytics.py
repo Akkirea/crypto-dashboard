@@ -128,3 +128,22 @@ async def event_history(
     limit: int = Query(200, ge=1, le=1000),
 ) -> list[dict[str, object]]:
     return await request.app.state.db.fetch_analytics_events(limit=limit)
+
+
+@router.get("/storage")
+async def storage(request: Request) -> dict[str, object]:
+    return await request.app.state.db.fetch_storage_summary()
+
+
+@router.get("/rollups/order-book")
+async def order_book_rollups(
+    request: Request,
+    symbol: Optional[str] = Query(None, max_length=32),
+    exchange: Optional[str] = Query(None, max_length=32),
+    limit: int = Query(500, ge=1, le=2000),
+) -> list[dict[str, object]]:
+    return await request.app.state.db.fetch_order_book_rollups(
+        symbol=symbol,
+        exchange=exchange,
+        limit=limit,
+    )

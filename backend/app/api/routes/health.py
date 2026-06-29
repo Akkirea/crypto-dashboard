@@ -55,6 +55,12 @@ async def database_health(request: Request) -> dict[str, object]:
             "interval_seconds": settings.retention_interval_seconds,
             "delete_limit": settings.retention_delete_limit,
             "order_book_persist_interval_ms": settings.order_book_persist_interval_ms,
+            "rollups": {
+                "enabled": settings.rollups_enabled,
+                "interval_seconds": settings.rollup_interval_seconds,
+                "lookback_hours": settings.rollup_lookback_hours,
+                "order_book_bucket_minutes": settings.order_book_rollup_bucket_minutes,
+            },
             "tables": {
                 "trades": f"{settings.trades_retention_days}d",
                 "order_book_top": f"{settings.order_book_retention_days}d",
