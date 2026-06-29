@@ -45,6 +45,16 @@ class Database:
         if self.pool:
             await self.pool.close()
 
+    async def ping(self) -> bool:
+        if not self.pool:
+            return False
+        try:
+            await self.pool.fetchval("SELECT 1")
+            return True
+        except Exception:
+            logger.exception("database ping failed")
+            return False
+
     async def ensure_schema(self) -> None:
         if not self.pool:
             return
@@ -399,3 +409,58 @@ class Database:
                 limit,
             )
         return [_decode_json_fields(dict(row), "payload") for row in reversed(rows)]
+
+    async def table_stats(self) -> list[dict[str, Any]]:
+        if not self.pool:
+            return []
+        rows = await self.pool.fetch(
+            """
+            SELECT
+              relname AS table_name,
+              n_live_tup::bigint AS estimated_rows,
+              pg_total_relation_size(relid)::bigint AS total_bytes
+            FROM pg_stat_user_tables
+            WHERE relname IN (
+              'trades',
+              'order_book_top',
+              'candles',
+              'analytics_events',
+              'analytics_snapshots'
+            )
+            ORDER BY pg_total_relation_size(relid) DESC
+            """
+        )
+        return [dict(row) for row in rows]
+
+    async def apply_retention(self) -> dict[str, int]:
+        if not self.pool or not settings.retention_enabled:
+            return {}
+
+        cleanup_specs = [
+            ("trades", "trade_time", settings.trades_retention_days),
+            ("order_book_top", "received_at", settings.order_book_retention_days),
+            ("candles", "open_time", settings.candles_retention_days),
+            ("analytics_events", "occurred_at", settings.analytics_events_retention_days),
+            ("analytics_snapshots", "computed_at", settings.analytics_snapshots_retention_days),
+        ]
+        deleted: dict[str, int] = {}
+        async with self.pool.acquire() as conn:
+            for table_name, timestamp_column, retention_days in cleanup_specs:
+                if retention_days <= 0:
+                    continue
+                result = await conn.execute(
+                    f"""
+                    DELETE FROM {table_name}
+                    WHERE id IN (
+                      SELECT id
+                      FROM {table_name}
+                      WHERE {timestamp_column} < now() - ($1::int * interval '1 day')
+                      ORDER BY {timestamp_column}
+                      LIMIT $2
+                    )
+                    """,
+                    retention_days,
+                    settings.retention_delete_limit,
+                )
+                deleted[table_name] = int(result.rsplit(" ", 1)[-1])
+        return deleted

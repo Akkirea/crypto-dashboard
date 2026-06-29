@@ -27,6 +27,14 @@ class Settings(BaseSettings):
     volume_zscore_alert: float = 3.0
     liquidity_collapse_alert_pct: float = 50.0
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    retention_enabled: bool = True
+    retention_interval_seconds: int = 3600
+    trades_retention_days: int = 14
+    order_book_retention_days: int = 3
+    candles_retention_days: int = 180
+    analytics_events_retention_days: int = 90
+    analytics_snapshots_retention_days: int = 90
+    retention_delete_limit: int = 10000
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

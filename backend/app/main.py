@@ -52,6 +52,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     bybit_task = asyncio.create_task(bybit_client.run()) if bybit_client is not None else None
     health_task = asyncio.create_task(_publish_health(state, broadcaster))
     analytics_task = asyncio.create_task(analytics_worker.run())
+    retention_task = asyncio.create_task(_run_retention(db))
 
     app.state.market_state = state
     app.state.broadcaster = broadcaster
@@ -83,6 +84,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             bybit_task.cancel()
         health_task.cancel()
         analytics_task.cancel()
+        retention_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await ingest_task
         if coinbase_task is not None:
@@ -98,6 +100,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await health_task
         with contextlib.suppress(asyncio.CancelledError):
             await analytics_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await retention_task
         await db.close()
 
 
@@ -106,6 +110,19 @@ async def _publish_health(state: MarketState, broadcaster: Broadcaster) -> None:
         state.client_count = len(broadcaster.clients)
         await broadcaster.broadcast(state.health().model_dump())
         await asyncio.sleep(1)
+
+
+async def _run_retention(db: Database) -> None:
+    while True:
+        try:
+            await asyncio.sleep(settings.retention_interval_seconds)
+            deleted = await db.apply_retention()
+            if deleted:
+                logger.info("retention cleanup completed", extra={"deleted": deleted})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("retention cleanup failed")
 
 
 app = FastAPI(title="Crypto Market Dashboard Backend", lifespan=lifespan)
