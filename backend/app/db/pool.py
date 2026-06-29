@@ -28,6 +28,7 @@ def _decode_json_fields(row: dict[str, Any], *fields: str) -> dict[str, Any]:
 class Database:
     def __init__(self) -> None:
         self.pool: Optional[asyncpg.Pool] = None
+        self._last_book_persist_ms: dict[tuple[str, str], int] = {}
 
     async def connect(self) -> None:
         if not settings.database_url:
@@ -206,6 +207,12 @@ class Database:
     async def save_book(self, event: BookTopEvent) -> None:
         if not self.pool:
             return
+        throttle_ms = max(0, settings.order_book_persist_interval_ms)
+        key = (event.exchange, event.symbol)
+        last_persisted_at = self._last_book_persist_ms.get(key, 0)
+        if throttle_ms and event.received_at - last_persisted_at < throttle_ms:
+            return
+        self._last_book_persist_ms[key] = event.received_at
         await self.pool.execute(
             """
             INSERT INTO order_book_top (

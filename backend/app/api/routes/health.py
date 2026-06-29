@@ -54,6 +54,7 @@ async def database_health(request: Request) -> dict[str, object]:
             "enabled": settings.retention_enabled,
             "interval_seconds": settings.retention_interval_seconds,
             "delete_limit": settings.retention_delete_limit,
+            "order_book_persist_interval_ms": settings.order_book_persist_interval_ms,
             "tables": {
                 "trades": f"{settings.trades_retention_days}d",
                 "order_book_top": f"{settings.order_book_retention_days}d",
