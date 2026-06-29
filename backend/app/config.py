@@ -28,13 +28,14 @@ class Settings(BaseSettings):
     liquidity_collapse_alert_pct: float = 50.0
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     retention_enabled: bool = True
-    retention_interval_seconds: int = 3600
+    retention_initial_delay_seconds: int = 60
+    retention_interval_seconds: int = 900
     trades_retention_days: int = 7
     order_book_retention_days: int = 1
     candles_retention_days: int = 180
     analytics_events_retention_days: int = 30
     analytics_snapshots_retention_days: int = 30
-    retention_delete_limit: int = 10000
+    retention_delete_limit: int = 100000
     order_book_persist_interval_ms: int = 1000
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

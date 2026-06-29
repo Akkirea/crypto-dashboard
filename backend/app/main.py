@@ -113,12 +113,13 @@ async def _publish_health(state: MarketState, broadcaster: Broadcaster) -> None:
 
 
 async def _run_retention(db: Database) -> None:
+    await asyncio.sleep(settings.retention_initial_delay_seconds)
     while True:
         try:
-            await asyncio.sleep(settings.retention_interval_seconds)
             deleted = await db.apply_retention()
             if deleted:
                 logger.info("retention cleanup completed", extra={"deleted": deleted})
+            await asyncio.sleep(settings.retention_interval_seconds)
         except asyncio.CancelledError:
             raise
         except Exception:
