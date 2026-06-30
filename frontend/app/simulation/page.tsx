@@ -2,12 +2,23 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ChevronLeft, Database, PlaySquare, ShieldCheck, SlidersHorizontal } from "lucide-react";
+import {
+  ChevronLeft,
+  Database,
+  PlaySquare,
+  RotateCcw,
+  Send,
+  ShieldCheck,
+  SlidersHorizontal
+} from "lucide-react";
 import { backendHttpUrl } from "@/lib/backendConfig";
 import { fmtPrice, toNumber } from "@/lib/format";
 import {
   SimulationCandle,
   SimulationConfig,
+  SimulationFill,
+  SimulationOrder,
+  SimulationPortfolio,
   SimulationSnapshot,
   SimulationTrade
 } from "@/lib/simulationTypes";
@@ -15,9 +26,15 @@ import {
 export default function SimulationPage() {
   const [config, setConfig] = useState<SimulationConfig | null>(null);
   const [snapshot, setSnapshot] = useState<SimulationSnapshot | null>(null);
+  const [portfolio, setPortfolio] = useState<SimulationPortfolio | null>(null);
+  const [orders, setOrders] = useState<SimulationOrder[]>([]);
+  const [fills, setFills] = useState<SimulationFill[]>([]);
   const [candles, setCandles] = useState<SimulationCandle[]>([]);
   const [trades, setTrades] = useState<SimulationTrade[]>([]);
   const [symbol, setSymbol] = useState("BTCUSDT");
+  const [side, setSide] = useState<"buy" | "sell">("buy");
+  const [quantity, setQuantity] = useState("0.001");
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -49,14 +66,18 @@ export default function SimulationPage() {
     async function loadMarketData() {
       try {
         const httpUrl = backendHttpUrl();
-        const [snapshotResponse, candleResponse, tradeResponse] = await Promise.all([
+        const [snapshotResponse, candleResponse, tradeResponse, portfolioResponse, orderResponse, fillResponse] =
+          await Promise.all([
           fetch(`${httpUrl}/api/simulation/market/snapshot`, { cache: "no-store" }),
           fetch(`${httpUrl}/api/simulation/market/candles?symbol=${symbol}&interval=1m&limit=12`, {
             cache: "no-store"
           }),
           fetch(`${httpUrl}/api/simulation/market/trades?symbol=${symbol}&limit=12`, {
             cache: "no-store"
-          })
+          }),
+          fetch(`${httpUrl}/api/simulation/portfolio`, { cache: "no-store" }),
+          fetch(`${httpUrl}/api/simulation/orders?limit=20`, { cache: "no-store" }),
+          fetch(`${httpUrl}/api/simulation/fills?limit=20`, { cache: "no-store" })
         ]);
         if (snapshotResponse.ok) {
           const data = (await snapshotResponse.json()) as SimulationSnapshot;
@@ -69,6 +90,18 @@ export default function SimulationPage() {
         if (tradeResponse.ok) {
           const data = (await tradeResponse.json()) as SimulationTrade[];
           if (!closed) setTrades(data);
+        }
+        if (portfolioResponse.ok) {
+          const data = (await portfolioResponse.json()) as SimulationPortfolio;
+          if (!closed) setPortfolio(data);
+        }
+        if (orderResponse.ok) {
+          const data = (await orderResponse.json()) as SimulationOrder[];
+          if (!closed) setOrders(data);
+        }
+        if (fillResponse.ok) {
+          const data = (await fillResponse.json()) as SimulationFill[];
+          if (!closed) setFills(data);
         }
         if (!closed) setError(null);
       } catch (caught) {
@@ -87,10 +120,54 @@ export default function SimulationPage() {
   const selectedBook = snapshot?.books[symbol];
   const latestCandle = candles.at(-1);
   const latestTrade = trades.at(-1);
+  const selectedPosition = portfolio?.positions.find((position) => position.symbol === symbol);
   const totalMessages = useMemo(
     () => Object.values(snapshot?.health.message_counts ?? {}).reduce((sum, value) => sum + value, 0),
     [snapshot]
   );
+
+  async function submitOrder() {
+    setSubmitting(true);
+    try {
+      const response = await fetch(`${backendHttpUrl()}/api/simulation/orders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol, side, quantity })
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = (await response.json()) as SimulationOrder;
+      setOrders((current) => [data, ...current].slice(0, 20));
+      const [portfolioResponse, fillResponse] = await Promise.all([
+        fetch(`${backendHttpUrl()}/api/simulation/portfolio`, { cache: "no-store" }),
+        fetch(`${backendHttpUrl()}/api/simulation/fills?limit=20`, { cache: "no-store" })
+      ]);
+      if (portfolioResponse.ok) setPortfolio((await portfolioResponse.json()) as SimulationPortfolio);
+      if (fillResponse.ok) setFills((await fillResponse.json()) as SimulationFill[]);
+      setError(data.status === "rejected" ? data.rejection_reason ?? "order rejected" : null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "order submit failed");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function resetPortfolio() {
+    setSubmitting(true);
+    try {
+      const response = await fetch(`${backendHttpUrl()}/api/simulation/portfolio/reset`, {
+        method: "POST"
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      setPortfolio((await response.json()) as SimulationPortfolio);
+      setOrders([]);
+      setFills([]);
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "portfolio reset failed");
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   return (
     <main className="min-h-screen p-3 text-ink sm:p-5">
@@ -101,10 +178,10 @@ export default function SimulationPage() {
               <PlaySquare className="h-5 w-5" aria-hidden />
             </div>
             <div>
-              <h1 className="text-2xl font-semibold text-white">Simulation Foundation</h1>
+              <h1 className="text-2xl font-semibold text-white">Paper Simulation</h1>
               <div className="mt-1 flex items-center gap-2 text-sm text-muted">
                 <ShieldCheck className="h-4 w-4 text-buy" aria-hidden />
-                Read-only market data contracts
+                Live simulated execution only
               </div>
             </div>
           </div>
@@ -127,22 +204,22 @@ export default function SimulationPage() {
           <section className="mb-5 grid gap-3 md:grid-cols-4">
             <Metric label="Mode" value={config?.read_only ? "Read-only" : "—"} detail="No execution keys" />
             <Metric label="Feed" value={snapshot?.health.connected ? "Live" : "Pending"} detail={`${totalMessages.toLocaleString()} messages`} />
-            <Metric label="Latest Trade" value={fmtPrice(toNumber(latestTrade?.price))} detail={symbol} />
-            <Metric label="Spread" value={`${fmtPrice(selectedBook?.spread_bps)} bps`} detail="Top of book" />
+            <Metric label="Equity" value={`$${fmtPrice(toNumber(portfolio?.equity))}`} detail="Simulated" />
+            <Metric label="Cash" value={`$${fmtPrice(toNumber(portfolio?.cash_balance))}`} detail="Available" />
           </section>
 
-          <section className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)_minmax(340px,0.9fr)]">
+          <section className="mb-4 grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)_minmax(340px,0.9fr)]">
             <section className="rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
               <div className="mb-3 flex items-center gap-2">
                 <SlidersHorizontal className="h-4 w-4 text-gold" aria-hidden />
-                <h2 className="text-sm font-semibold text-ink">Fill Assumptions</h2>
+                <h2 className="text-sm font-semibold text-ink">Paper Order</h2>
               </div>
-              <div className="space-y-3 text-sm">
+              <div className="mb-4 space-y-3 text-sm">
                 <Row label="Price source" value={config?.fill_model.price_source ?? "—"} />
                 <Row label="Fee" value={`${config?.fill_model.fee_bps ?? "—"} bps`} />
                 <Row label="Slippage" value={`${config?.fill_model.slippage_bps ?? "—"} bps`} />
                 <Row label="Latency" value={`${config?.fill_model.latency_ms ?? "—"} ms`} />
-                <Row label="Exchange" value={config?.default_exchange ?? "—"} />
+                <Row label="Position" value={fmtPrice(toNumber(selectedPosition?.quantity))} />
               </div>
               <div className="mt-5 flex flex-wrap gap-2">
                 {(config?.symbols ?? ["BTCUSDT", "ETHUSDT", "SOLUSDT"]).map((item) => (
@@ -160,6 +237,51 @@ export default function SimulationPage() {
                   </button>
                 ))}
               </div>
+              <div className="mt-4 grid grid-cols-2 gap-2">
+                {(["buy", "sell"] as const).map((item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    onClick={() => setSide(item)}
+                    className={`h-10 rounded-lg border text-sm font-medium capitalize ${
+                      side === item
+                        ? item === "buy"
+                          ? "border-buy/50 bg-buy/20 text-white"
+                          : "border-sell/50 bg-sell/20 text-white"
+                        : "border-white/10 bg-white/[0.05] text-muted hover:text-white"
+                    }`}
+                  >
+                    {item}
+                  </button>
+                ))}
+              </div>
+              <label className="mt-4 block text-xs text-muted">
+                Quantity
+                <input
+                  value={quantity}
+                  onChange={(event) => setQuantity(event.target.value)}
+                  className="mt-2 h-10 w-full rounded-lg border border-white/10 bg-black/30 px-3 text-sm text-white outline-none focus:border-gold/50"
+                  inputMode="decimal"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={submitOrder}
+                disabled={submitting}
+                className="mt-4 inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-gold/40 bg-gold/20 text-sm font-medium text-white hover:bg-gold/25 disabled:opacity-50"
+              >
+                <Send className="h-4 w-4" aria-hidden />
+                Submit Simulated Market Order
+              </button>
+              <button
+                type="button"
+                onClick={resetPortfolio}
+                disabled={submitting}
+                className="mt-2 inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] text-sm text-muted hover:text-white disabled:opacity-50"
+              >
+                <RotateCcw className="h-4 w-4" aria-hidden />
+                Reset Paper Portfolio
+              </button>
             </section>
 
             <section className="rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
@@ -210,9 +332,93 @@ export default function SimulationPage() {
               ))}
             </section>
           </section>
+
+          <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(340px,0.9fr)]">
+            <PaperPositions positions={portfolio?.positions ?? []} />
+            <PaperOrders orders={orders} />
+            <PaperFills fills={fills} />
+          </section>
         </section>
       </div>
     </main>
+  );
+}
+
+function PaperPositions({ positions }: { positions: NonNullable<SimulationPortfolio["positions"]> }) {
+  return (
+    <section className="rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
+      <h2 className="mb-3 text-sm font-semibold text-ink">Positions</h2>
+      <div className="grid grid-cols-[1fr_1fr_1fr_1fr] border-b border-line pb-2 text-xs text-muted">
+        <span>Symbol</span>
+        <span className="text-right">Qty</span>
+        <span className="text-right">Avg</span>
+        <span className="text-right">UPnL</span>
+      </div>
+      {positions.length ? (
+        positions.map((position) => (
+          <div key={position.symbol} className="grid grid-cols-[1fr_1fr_1fr_1fr] border-b border-white/[0.06] py-2 text-sm tabular-nums">
+            <span className="font-medium text-white">{position.symbol}</span>
+            <span className="text-right">{fmtPrice(toNumber(position.quantity))}</span>
+            <span className="text-right">{fmtPrice(toNumber(position.avg_entry_price))}</span>
+            <span className="text-right text-buy">{fmtPrice(toNumber(position.unrealized_pnl))}</span>
+          </div>
+        ))
+      ) : (
+        <div className="py-4 text-sm text-muted">No simulated positions.</div>
+      )}
+    </section>
+  );
+}
+
+function PaperOrders({ orders }: { orders: SimulationOrder[] }) {
+  return (
+    <section className="rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
+      <h2 className="mb-3 text-sm font-semibold text-ink">Orders</h2>
+      <div className="grid grid-cols-[60px_1fr_1fr_1fr] border-b border-line pb-2 text-xs text-muted">
+        <span>Side</span>
+        <span>Symbol</span>
+        <span className="text-right">Status</span>
+        <span className="text-right">Fill</span>
+      </div>
+      {orders.length ? (
+        orders.slice(0, 10).map((order) => (
+          <div key={order.id} className="grid grid-cols-[60px_1fr_1fr_1fr] border-b border-white/[0.06] py-2 text-sm tabular-nums">
+            <span className={order.side === "buy" ? "text-buy" : "text-sell"}>{order.side}</span>
+            <span className="font-medium text-white">{order.symbol}</span>
+            <span className="text-right text-muted">{order.status}</span>
+            <span className="text-right">{fmtPrice(toNumber(order.fill_price))}</span>
+          </div>
+        ))
+      ) : (
+        <div className="py-4 text-sm text-muted">No simulated orders.</div>
+      )}
+    </section>
+  );
+}
+
+function PaperFills({ fills }: { fills: SimulationFill[] }) {
+  return (
+    <section className="rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
+      <h2 className="mb-3 text-sm font-semibold text-ink">Fills</h2>
+      <div className="grid grid-cols-[60px_1fr_1fr_1fr] border-b border-line pb-2 text-xs text-muted">
+        <span>Side</span>
+        <span>Symbol</span>
+        <span className="text-right">Price</span>
+        <span className="text-right">Qty</span>
+      </div>
+      {fills.length ? (
+        fills.slice(0, 10).map((fill) => (
+          <div key={fill.id} className="grid grid-cols-[60px_1fr_1fr_1fr] border-b border-white/[0.06] py-2 text-sm tabular-nums">
+            <span className={fill.side === "buy" ? "text-buy" : "text-sell"}>{fill.side}</span>
+            <span className="font-medium text-white">{fill.symbol}</span>
+            <span className="text-right text-white">{fmtPrice(toNumber(fill.price))}</span>
+            <span className="text-right text-muted">{fmtPrice(toNumber(fill.quantity))}</span>
+          </div>
+        ))
+      ) : (
+        <div className="py-4 text-sm text-muted">No simulated fills.</div>
+      )}
+    </section>
   );
 }
 

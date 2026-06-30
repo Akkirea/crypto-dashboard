@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 
 from app.config import settings
 
@@ -16,6 +18,13 @@ def _validate_symbol(symbol: str) -> str:
     return normalized
 
 
+class SimulatedMarketOrderRequest(BaseModel):
+    portfolio_id: str = Field(default="default", max_length=64)
+    symbol: str = Field(..., max_length=32)
+    side: str = Field(..., pattern="^(buy|sell)$")
+    quantity: Decimal = Field(..., gt=0)
+
+
 @router.get("/config")
 async def simulation_config() -> dict[str, object]:
     return {
@@ -23,6 +32,7 @@ async def simulation_config() -> dict[str, object]:
         "read_only": True,
         "live_trading_enabled": False,
         "order_execution_enabled": False,
+        "simulated_execution_enabled": True,
         "symbols": settings.symbol_list,
         "intervals": settings.interval_list,
         "default_exchange": settings.simulation_default_exchange,
@@ -93,4 +103,97 @@ async def latest_book(
     return await request.app.state.db.fetch_latest_book_top(
         _validate_symbol(symbol),
         exchange=(exchange or settings.simulation_default_exchange).lower(),
+    )
+
+
+@router.get("/portfolio")
+async def portfolio(
+    request: Request,
+    portfolio_id: str = Query("default", max_length=64),
+) -> dict[str, object]:
+    return await request.app.state.db.fetch_simulation_portfolio(
+        portfolio_id=portfolio_id,
+        marks=request.app.state.market_state.latest_prices,
+    )
+
+
+@router.get("/orders")
+async def orders(
+    request: Request,
+    portfolio_id: str = Query("default", max_length=64),
+    limit: int = Query(100, ge=1, le=500),
+) -> list[dict[str, object]]:
+    return await request.app.state.db.fetch_simulation_orders(
+        portfolio_id=portfolio_id,
+        limit=limit,
+    )
+
+
+@router.get("/fills")
+async def fills(
+    request: Request,
+    portfolio_id: str = Query("default", max_length=64),
+    limit: int = Query(100, ge=1, le=500),
+) -> list[dict[str, object]]:
+    return await request.app.state.db.fetch_simulation_fills(
+        portfolio_id=portfolio_id,
+        limit=limit,
+    )
+
+
+@router.get("/positions")
+async def positions(
+    request: Request,
+    portfolio_id: str = Query("default", max_length=64),
+) -> list[dict[str, object]]:
+    return await request.app.state.db.fetch_simulation_positions(portfolio_id=portfolio_id)
+
+
+@router.post("/orders")
+async def submit_order(
+    request: Request,
+    order: SimulatedMarketOrderRequest,
+) -> dict[str, object]:
+    symbol = _validate_symbol(order.symbol)
+    exchange = settings.simulation_default_exchange.lower()
+    book = request.app.state.market_state.books.get(symbol)
+    if book is None:
+        persisted_book = await request.app.state.db.fetch_latest_book_top(symbol, exchange=exchange)
+        if persisted_book is None:
+            raise HTTPException(status_code=409, detail="no book available for simulated fill")
+        bid_price = Decimal(str(persisted_book["bid_price"]))
+        ask_price = Decimal(str(persisted_book["ask_price"]))
+    else:
+        bid_price = Decimal(str(book.bid_price))
+        ask_price = Decimal(str(book.ask_price))
+
+    result = await request.app.state.db.create_simulation_market_order(
+        portfolio_id=order.portfolio_id,
+        exchange=exchange,
+        symbol=symbol,
+        side=order.side,
+        quantity=order.quantity,
+        bid_price=bid_price,
+        ask_price=ask_price,
+        payload={
+            "fill_model": {
+                "price_source": settings.simulation_fill_price_source,
+                "fee_bps": settings.simulation_fee_bps,
+                "slippage_bps": settings.simulation_slippage_bps,
+                "latency_ms": settings.simulation_latency_ms,
+            }
+        },
+    )
+    return result
+
+
+@router.post("/portfolio/reset")
+async def reset_portfolio(
+    request: Request,
+    portfolio_id: str = Query("default", max_length=64),
+) -> dict[str, object]:
+    await request.app.state.db.reset_simulation_portfolio(portfolio_id=portfolio_id)
+    return await request.app.state.db.fetch_simulation_portfolio(
+        portfolio_id=portfolio_id,
+        marks=request.app.state.market_state.latest_prices,
     )

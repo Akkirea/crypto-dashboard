@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     simulation_fee_bps: float = 10.0
     simulation_slippage_bps: float = 1.0
     simulation_latency_ms: int = 250
+    simulation_initial_cash: float = 100000.0
+    simulation_allow_short: bool = False
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     retention_enabled: bool = True
     retention_initial_delay_seconds: int = 60

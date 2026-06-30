@@ -182,6 +182,85 @@ def upgrade() -> None:
         CREATE INDEX IF NOT EXISTS idx_analytics_snapshots_family_window_time
         ON analytics_snapshots(metric_family, metric_window, computed_at DESC);
 
+        CREATE TABLE IF NOT EXISTS simulation_portfolios (
+          id TEXT PRIMARY KEY,
+          cash_balance NUMERIC(30, 8) NOT NULL,
+          initial_cash NUMERIC(30, 8) NOT NULL,
+          realized_pnl NUMERIC(30, 8) NOT NULL DEFAULT 0,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+
+        CREATE TABLE IF NOT EXISTS simulation_orders (
+          id BIGSERIAL PRIMARY KEY,
+          portfolio_id TEXT NOT NULL REFERENCES simulation_portfolios(id),
+          exchange TEXT NOT NULL,
+          symbol TEXT NOT NULL,
+          side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
+          order_type TEXT NOT NULL CHECK (order_type IN ('market')),
+          status TEXT NOT NULL CHECK (
+            status IN ('submitted', 'filled', 'rejected', 'cancelled')
+          ),
+          requested_quantity NUMERIC(30, 8) NOT NULL,
+          filled_quantity NUMERIC(30, 8) NOT NULL DEFAULT 0,
+          fill_price NUMERIC(30, 8),
+          fee NUMERIC(30, 8) NOT NULL DEFAULT 0,
+          submitted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          filled_at TIMESTAMPTZ,
+          rejection_reason TEXT,
+          payload JSONB NOT NULL DEFAULT '{}'::jsonb
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_simulation_orders_portfolio_time
+        ON simulation_orders(portfolio_id, submitted_at DESC);
+
+        CREATE TABLE IF NOT EXISTS simulation_fills (
+          id BIGSERIAL PRIMARY KEY,
+          order_id BIGINT NOT NULL REFERENCES simulation_orders(id),
+          portfolio_id TEXT NOT NULL REFERENCES simulation_portfolios(id),
+          exchange TEXT NOT NULL,
+          symbol TEXT NOT NULL,
+          side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
+          price NUMERIC(30, 8) NOT NULL,
+          quantity NUMERIC(30, 8) NOT NULL,
+          notional NUMERIC(30, 8) NOT NULL,
+          fee NUMERIC(30, 8) NOT NULL,
+          liquidity TEXT NOT NULL DEFAULT 'taker',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_simulation_fills_portfolio_time
+        ON simulation_fills(portfolio_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS simulation_positions (
+          portfolio_id TEXT NOT NULL REFERENCES simulation_portfolios(id),
+          exchange TEXT NOT NULL,
+          symbol TEXT NOT NULL,
+          quantity NUMERIC(30, 8) NOT NULL,
+          avg_entry_price NUMERIC(30, 8) NOT NULL,
+          realized_pnl NUMERIC(30, 8) NOT NULL DEFAULT 0,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          PRIMARY KEY (portfolio_id, exchange, symbol)
+        );
+
+        CREATE TABLE IF NOT EXISTS simulation_equity_snapshots (
+          id BIGSERIAL PRIMARY KEY,
+          portfolio_id TEXT NOT NULL REFERENCES simulation_portfolios(id),
+          cash_balance NUMERIC(30, 8) NOT NULL,
+          equity NUMERIC(30, 8) NOT NULL,
+          unrealized_pnl NUMERIC(30, 8) NOT NULL,
+          realized_pnl NUMERIC(30, 8) NOT NULL,
+          payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_simulation_equity_portfolio_time
+        ON simulation_equity_snapshots(portfolio_id, created_at DESC);
+
+        INSERT INTO simulation_portfolios(id, cash_balance, initial_cash)
+        VALUES ('default', 100000, 100000)
+        ON CONFLICT (id) DO NOTHING;
+
         INSERT INTO symbols(symbol, base_asset, quote_asset)
         VALUES
           ('BTCUSDT', 'BTC', 'USDT'),
@@ -196,6 +275,11 @@ def downgrade() -> None:
     op.execute(
         """
         DROP TABLE IF EXISTS analytics_snapshots;
+        DROP TABLE IF EXISTS simulation_equity_snapshots;
+        DROP TABLE IF EXISTS simulation_positions;
+        DROP TABLE IF EXISTS simulation_fills;
+        DROP TABLE IF EXISTS simulation_orders;
+        DROP TABLE IF EXISTS simulation_portfolios;
         DROP TABLE IF EXISTS analytics_events;
         DROP TABLE IF EXISTS system_events;
         DROP TABLE IF EXISTS ingestion_events;

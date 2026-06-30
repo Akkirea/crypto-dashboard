@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Optional, Union
 
 import asyncpg
@@ -243,13 +244,93 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_analytics_snapshots_family_window_time
                 ON analytics_snapshots(metric_family, metric_window, computed_at DESC);
 
+                CREATE TABLE IF NOT EXISTS simulation_portfolios (
+                  id TEXT PRIMARY KEY,
+                  cash_balance NUMERIC(30, 8) NOT NULL,
+                  initial_cash NUMERIC(30, 8) NOT NULL,
+                  realized_pnl NUMERIC(30, 8) NOT NULL DEFAULT 0,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+
+                CREATE TABLE IF NOT EXISTS simulation_orders (
+                  id BIGSERIAL PRIMARY KEY,
+                  portfolio_id TEXT NOT NULL REFERENCES simulation_portfolios(id),
+                  exchange TEXT NOT NULL,
+                  symbol TEXT NOT NULL,
+                  side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
+                  order_type TEXT NOT NULL CHECK (order_type IN ('market')),
+                  status TEXT NOT NULL CHECK (
+                    status IN ('submitted', 'filled', 'rejected', 'cancelled')
+                  ),
+                  requested_quantity NUMERIC(30, 8) NOT NULL,
+                  filled_quantity NUMERIC(30, 8) NOT NULL DEFAULT 0,
+                  fill_price NUMERIC(30, 8),
+                  fee NUMERIC(30, 8) NOT NULL DEFAULT 0,
+                  submitted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  filled_at TIMESTAMPTZ,
+                  rejection_reason TEXT,
+                  payload JSONB NOT NULL DEFAULT '{}'::jsonb
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_simulation_orders_portfolio_time
+                ON simulation_orders(portfolio_id, submitted_at DESC);
+
+                CREATE TABLE IF NOT EXISTS simulation_fills (
+                  id BIGSERIAL PRIMARY KEY,
+                  order_id BIGINT NOT NULL REFERENCES simulation_orders(id),
+                  portfolio_id TEXT NOT NULL REFERENCES simulation_portfolios(id),
+                  exchange TEXT NOT NULL,
+                  symbol TEXT NOT NULL,
+                  side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
+                  price NUMERIC(30, 8) NOT NULL,
+                  quantity NUMERIC(30, 8) NOT NULL,
+                  notional NUMERIC(30, 8) NOT NULL,
+                  fee NUMERIC(30, 8) NOT NULL,
+                  liquidity TEXT NOT NULL DEFAULT 'taker',
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_simulation_fills_portfolio_time
+                ON simulation_fills(portfolio_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS simulation_positions (
+                  portfolio_id TEXT NOT NULL REFERENCES simulation_portfolios(id),
+                  exchange TEXT NOT NULL,
+                  symbol TEXT NOT NULL,
+                  quantity NUMERIC(30, 8) NOT NULL,
+                  avg_entry_price NUMERIC(30, 8) NOT NULL,
+                  realized_pnl NUMERIC(30, 8) NOT NULL DEFAULT 0,
+                  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  PRIMARY KEY (portfolio_id, exchange, symbol)
+                );
+
+                CREATE TABLE IF NOT EXISTS simulation_equity_snapshots (
+                  id BIGSERIAL PRIMARY KEY,
+                  portfolio_id TEXT NOT NULL REFERENCES simulation_portfolios(id),
+                  cash_balance NUMERIC(30, 8) NOT NULL,
+                  equity NUMERIC(30, 8) NOT NULL,
+                  unrealized_pnl NUMERIC(30, 8) NOT NULL,
+                  realized_pnl NUMERIC(30, 8) NOT NULL,
+                  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_simulation_equity_portfolio_time
+                ON simulation_equity_snapshots(portfolio_id, created_at DESC);
+
                 INSERT INTO symbols(symbol, base_asset, quote_asset)
                 VALUES
                   ('BTCUSDT', 'BTC', 'USDT'),
                   ('ETHUSDT', 'ETH', 'USDT'),
                   ('SOLUSDT', 'SOL', 'USDT')
                 ON CONFLICT (symbol) DO NOTHING;
-                """
+
+                INSERT INTO simulation_portfolios(id, cash_balance, initial_cash)
+                VALUES ('default', $1, $1)
+                ON CONFLICT (id) DO NOTHING;
+                """,
+                settings.simulation_initial_cash,
             )
 
     async def save_trade(self, event: TradeEvent) -> None:
@@ -506,7 +587,12 @@ class Database:
               'candles',
               'system_events',
               'analytics_events',
-              'analytics_snapshots'
+              'analytics_snapshots',
+              'simulation_portfolios',
+              'simulation_orders',
+              'simulation_fills',
+              'simulation_positions',
+              'simulation_equity_snapshots'
             )
             ORDER BY pg_total_relation_size(relid) DESC
             """
@@ -646,6 +732,308 @@ class Database:
             symbol.upper(),
         )
         return dict(row) if row else None
+
+    async def fetch_simulation_orders(
+        self, portfolio_id: str = "default", limit: int = 100
+    ) -> list[dict[str, Any]]:
+        if not self.pool:
+            return []
+        rows = await self.pool.fetch(
+            """
+            SELECT id, portfolio_id, exchange, symbol, side, order_type, status,
+                   requested_quantity, filled_quantity, fill_price, fee,
+                   submitted_at, filled_at, rejection_reason, payload
+            FROM simulation_orders
+            WHERE portfolio_id = $1
+            ORDER BY submitted_at DESC
+            LIMIT $2
+            """,
+            portfolio_id,
+            limit,
+        )
+        return [_decode_json_fields(dict(row), "payload") for row in rows]
+
+    async def fetch_simulation_fills(
+        self, portfolio_id: str = "default", limit: int = 100
+    ) -> list[dict[str, Any]]:
+        if not self.pool:
+            return []
+        rows = await self.pool.fetch(
+            """
+            SELECT id, order_id, portfolio_id, exchange, symbol, side, price,
+                   quantity, notional, fee, liquidity, created_at
+            FROM simulation_fills
+            WHERE portfolio_id = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+            """,
+            portfolio_id,
+            limit,
+        )
+        return [dict(row) for row in rows]
+
+    async def fetch_simulation_positions(self, portfolio_id: str = "default") -> list[dict[str, Any]]:
+        if not self.pool:
+            return []
+        rows = await self.pool.fetch(
+            """
+            SELECT portfolio_id, exchange, symbol, quantity, avg_entry_price,
+                   realized_pnl, updated_at
+            FROM simulation_positions
+            WHERE portfolio_id = $1 AND quantity <> 0
+            ORDER BY symbol
+            """,
+            portfolio_id,
+        )
+        return [dict(row) for row in rows]
+
+    async def fetch_simulation_portfolio(
+        self,
+        portfolio_id: str = "default",
+        marks: Optional[dict[str, float]] = None,
+    ) -> dict[str, Any]:
+        if not self.pool:
+            return {
+                "id": portfolio_id,
+                "cash_balance": 0,
+                "initial_cash": 0,
+                "realized_pnl": 0,
+                "unrealized_pnl": 0,
+                "equity": 0,
+                "positions": [],
+            }
+        await self._ensure_simulation_portfolio(portfolio_id)
+        portfolio = await self.pool.fetchrow(
+            """
+            SELECT id, cash_balance, initial_cash, realized_pnl, created_at, updated_at
+            FROM simulation_portfolios
+            WHERE id = $1
+            """,
+            portfolio_id,
+        )
+        positions = await self.fetch_simulation_positions(portfolio_id)
+        unrealized = Decimal("0")
+        gross_market_value = Decimal("0")
+        position_rows: list[dict[str, Any]] = []
+        for position in positions:
+            quantity = Decimal(position["quantity"])
+            avg_entry = Decimal(position["avg_entry_price"])
+            mark_price = Decimal(str((marks or {}).get(position["symbol"], float(avg_entry))))
+            market_value = quantity * mark_price
+            unrealized_pnl = (mark_price - avg_entry) * quantity
+            unrealized += unrealized_pnl
+            gross_market_value += market_value
+            enriched = dict(position)
+            enriched["mark_price"] = mark_price
+            enriched["market_value"] = market_value
+            enriched["unrealized_pnl"] = unrealized_pnl
+            position_rows.append(enriched)
+
+        cash = Decimal(portfolio["cash_balance"]) if portfolio else Decimal("0")
+        realized = Decimal(portfolio["realized_pnl"]) if portfolio else Decimal("0")
+        return {
+            **dict(portfolio),
+            "unrealized_pnl": unrealized,
+            "equity": cash + gross_market_value,
+            "realized_pnl": realized,
+            "positions": position_rows,
+        }
+
+    async def create_simulation_market_order(
+        self,
+        *,
+        portfolio_id: str,
+        exchange: str,
+        symbol: str,
+        side: str,
+        quantity: Decimal,
+        bid_price: Decimal,
+        ask_price: Decimal,
+        payload: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        if not self.pool:
+            return {
+                "status": "rejected",
+                "rejection_reason": "database unavailable",
+            }
+        await self._ensure_simulation_portfolio(portfolio_id)
+        side = side.lower()
+        exchange = exchange.lower()
+        symbol = symbol.upper()
+        slippage = Decimal(str(settings.simulation_slippage_bps)) / Decimal("10000")
+        fee_rate = Decimal(str(settings.simulation_fee_bps)) / Decimal("10000")
+        fill_price = ask_price * (Decimal("1") + slippage) if side == "buy" else bid_price * (
+            Decimal("1") - slippage
+        )
+        notional = fill_price * quantity
+        fee = notional * fee_rate
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                portfolio = await conn.fetchrow(
+                    """
+                    SELECT id, cash_balance, initial_cash, realized_pnl
+                    FROM simulation_portfolios
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    portfolio_id,
+                )
+                position = await conn.fetchrow(
+                    """
+                    SELECT quantity, avg_entry_price, realized_pnl
+                    FROM simulation_positions
+                    WHERE portfolio_id = $1 AND exchange = $2 AND symbol = $3
+                    FOR UPDATE
+                    """,
+                    portfolio_id,
+                    exchange,
+                    symbol,
+                )
+                cash = Decimal(portfolio["cash_balance"])
+                old_qty = Decimal(position["quantity"]) if position else Decimal("0")
+                old_avg = Decimal(position["avg_entry_price"]) if position else Decimal("0")
+                old_realized = Decimal(position["realized_pnl"]) if position else Decimal("0")
+
+                rejection_reason = None
+                if quantity <= 0:
+                    rejection_reason = "quantity must be positive"
+                elif side == "buy" and cash < notional + fee:
+                    rejection_reason = "insufficient simulated cash"
+                elif side == "sell" and not settings.simulation_allow_short and old_qty < quantity:
+                    rejection_reason = "insufficient simulated position"
+
+                order = await conn.fetchrow(
+                    """
+                    INSERT INTO simulation_orders(
+                      portfolio_id, exchange, symbol, side, order_type, status,
+                      requested_quantity, filled_quantity, fill_price, fee,
+                      filled_at, rejection_reason, payload
+                    )
+                    VALUES (
+                      $1,$2,$3,$4,'market',$5,$6,$7,$8,$9,
+                      CASE WHEN $5 = 'filled' THEN now() ELSE NULL END,
+                      $10,$11::jsonb
+                    )
+                    RETURNING id, portfolio_id, exchange, symbol, side, order_type, status,
+                              requested_quantity, filled_quantity, fill_price, fee,
+                              submitted_at, filled_at, rejection_reason, payload
+                    """,
+                    portfolio_id,
+                    exchange,
+                    symbol,
+                    side,
+                    "rejected" if rejection_reason else "filled",
+                    quantity,
+                    Decimal("0") if rejection_reason else quantity,
+                    None if rejection_reason else fill_price,
+                    Decimal("0") if rejection_reason else fee,
+                    rejection_reason,
+                    json.dumps(payload or {}),
+                )
+                if rejection_reason:
+                    return _decode_json_fields(dict(order), "payload")
+
+                if side == "buy":
+                    new_cash = cash - notional - fee
+                    new_qty = old_qty + quantity
+                    new_avg = ((old_qty * old_avg) + (quantity * fill_price)) / new_qty
+                    realized_delta = Decimal("0")
+                else:
+                    new_cash = cash + notional - fee
+                    new_qty = old_qty - quantity
+                    new_avg = Decimal("0") if new_qty == 0 else old_avg
+                    realized_delta = (fill_price - old_avg) * quantity
+
+                await conn.execute(
+                    """
+                    INSERT INTO simulation_fills(
+                      order_id, portfolio_id, exchange, symbol, side,
+                      price, quantity, notional, fee
+                    )
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                    """,
+                    order["id"],
+                    portfolio_id,
+                    exchange,
+                    symbol,
+                    side,
+                    fill_price,
+                    quantity,
+                    notional,
+                    fee,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO simulation_positions(
+                      portfolio_id, exchange, symbol, quantity, avg_entry_price, realized_pnl
+                    )
+                    VALUES ($1,$2,$3,$4,$5,$6)
+                    ON CONFLICT (portfolio_id, exchange, symbol)
+                    DO UPDATE SET
+                      quantity = EXCLUDED.quantity,
+                      avg_entry_price = EXCLUDED.avg_entry_price,
+                      realized_pnl = simulation_positions.realized_pnl + $7,
+                      updated_at = now()
+                    """,
+                    portfolio_id,
+                    exchange,
+                    symbol,
+                    new_qty,
+                    new_avg,
+                    old_realized + realized_delta,
+                    realized_delta,
+                )
+                await conn.execute(
+                    """
+                    UPDATE simulation_portfolios
+                    SET cash_balance = $2,
+                        realized_pnl = realized_pnl + $3,
+                        updated_at = now()
+                    WHERE id = $1
+                    """,
+                    portfolio_id,
+                    new_cash,
+                    realized_delta,
+                )
+                return _decode_json_fields(dict(order), "payload")
+
+    async def reset_simulation_portfolio(self, portfolio_id: str = "default") -> None:
+        if not self.pool:
+            return
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("DELETE FROM simulation_equity_snapshots WHERE portfolio_id = $1", portfolio_id)
+                await conn.execute("DELETE FROM simulation_fills WHERE portfolio_id = $1", portfolio_id)
+                await conn.execute("DELETE FROM simulation_orders WHERE portfolio_id = $1", portfolio_id)
+                await conn.execute("DELETE FROM simulation_positions WHERE portfolio_id = $1", portfolio_id)
+                await conn.execute(
+                    """
+                    INSERT INTO simulation_portfolios(id, cash_balance, initial_cash, realized_pnl)
+                    VALUES ($1,$2,$2,0)
+                    ON CONFLICT (id)
+                    DO UPDATE SET
+                      cash_balance = EXCLUDED.cash_balance,
+                      initial_cash = EXCLUDED.initial_cash,
+                      realized_pnl = 0,
+                      updated_at = now()
+                    """,
+                    portfolio_id,
+                    Decimal(str(settings.simulation_initial_cash)),
+                )
+
+    async def _ensure_simulation_portfolio(self, portfolio_id: str = "default") -> None:
+        if not self.pool:
+            return
+        await self.pool.execute(
+            """
+            INSERT INTO simulation_portfolios(id, cash_balance, initial_cash)
+            VALUES ($1,$2,$2)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            portfolio_id,
+            Decimal(str(settings.simulation_initial_cash)),
+        )
 
     async def fetch_storage_summary(self) -> dict[str, Any]:
         stats = await self.table_stats()
