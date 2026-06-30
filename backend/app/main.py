@@ -59,6 +59,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     bybit_task = asyncio.create_task(bybit_client.run()) if bybit_client is not None else None
     health_task = asyncio.create_task(_publish_health(state, broadcaster))
     analytics_task = asyncio.create_task(analytics_worker.run())
+    db_reconnect_task = asyncio.create_task(_run_database_reconnect(db))
     retention_task = asyncio.create_task(_run_retention(db))
     rollup_task = asyncio.create_task(_run_rollups(db))
 
@@ -98,6 +99,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             bybit_task.cancel()
         health_task.cancel()
         analytics_task.cancel()
+        db_reconnect_task.cancel()
         retention_task.cancel()
         rollup_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -115,6 +117,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await health_task
         with contextlib.suppress(asyncio.CancelledError):
             await analytics_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await db_reconnect_task
         with contextlib.suppress(asyncio.CancelledError):
             await retention_task
         with contextlib.suppress(asyncio.CancelledError):
@@ -155,6 +159,32 @@ async def _run_retention(db: Database) -> None:
                 status="failed",
                 message=str(exc),
             )
+
+
+async def _run_database_reconnect(db: Database) -> None:
+    was_connected = db.pool is not None
+    while True:
+        try:
+            if db.pool is None:
+                await db.connect()
+                if db.pool is not None and not was_connected:
+                    was_connected = True
+                    await db.record_system_event(
+                        "database",
+                        "reconnected",
+                        status="ok",
+                        message="database persistence connected",
+                    )
+            elif not await db.ping():
+                was_connected = False
+                logger.warning("database ping failed; reconnect will be retried")
+            await asyncio.sleep(settings.database_reconnect_interval_seconds)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("database reconnect loop failed")
+            was_connected = False
+            await asyncio.sleep(settings.database_reconnect_interval_seconds)
 
 
 async def _run_rollups(db: Database) -> None:

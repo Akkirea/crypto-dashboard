@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -29,18 +30,29 @@ class Database:
     def __init__(self) -> None:
         self.pool: Optional[asyncpg.Pool] = None
         self._last_book_persist_ms: dict[tuple[str, str], int] = {}
+        self._connect_lock = asyncio.Lock()
 
     async def connect(self) -> None:
         if not settings.database_url:
             logger.warning("DATABASE_URL is not set; persistence disabled")
             return
-        try:
-            self.pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=5)
-            await self.ensure_schema()
-            logger.info("database connected")
-        except Exception:
-            logger.exception("database connection failed; continuing without persistence")
-            self.pool = None
+        async with self._connect_lock:
+            if self.pool:
+                return
+            try:
+                self.pool = await asyncpg.create_pool(
+                    settings.database_url,
+                    min_size=1,
+                    max_size=5,
+                    timeout=settings.database_connect_timeout_seconds,
+                )
+                await self.ensure_schema()
+                logger.info("database connected")
+            except Exception:
+                logger.exception("database connection failed; continuing without persistence")
+                if self.pool:
+                    await self.pool.close()
+                self.pool = None
 
     async def close(self) -> None:
         if self.pool:
@@ -54,6 +66,9 @@ class Database:
             return True
         except Exception:
             logger.exception("database ping failed")
+            if self.pool:
+                await self.pool.close()
+            self.pool = None
             return False
 
     async def ensure_schema(self) -> None:

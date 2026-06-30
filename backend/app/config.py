@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000
     database_url: Optional[str] = None
+    database_connect_timeout_seconds: int = 10
+    database_reconnect_interval_seconds: int = 15
     binance_ws_base: str = "wss://stream.binance.com:9443/stream"
     coinbase_ws_url: str = "wss://ws-feed.exchange.coinbase.com"
     enable_coinbase: bool = True
