@@ -325,12 +325,15 @@ class Database:
                   ('ETHUSDT', 'ETH', 'USDT'),
                   ('SOLUSDT', 'SOL', 'USDT')
                 ON CONFLICT (symbol) DO NOTHING;
-
+                """,
+            )
+            await conn.execute(
+                """
                 INSERT INTO simulation_portfolios(id, cash_balance, initial_cash)
                 VALUES ('default', $1, $1)
                 ON CONFLICT (id) DO NOTHING;
                 """,
-                settings.simulation_initial_cash,
+                Decimal(str(settings.simulation_initial_cash)),
             )
 
     async def save_trade(self, event: TradeEvent) -> None:
