@@ -63,7 +63,7 @@ async def database_health(request: Request) -> dict[str, object]:
             },
             "tables": {
                 "trades": f"{settings.trades_retention_days}d",
-                "order_book_top": f"{settings.order_book_retention_days}d",
+                "order_book_top": f"{settings.order_book_retention_hours}h",
                 "candles": f"{settings.candles_retention_days}d",
                 "analytics_events": f"{settings.analytics_events_retention_days}d",
                 "analytics_snapshots": f"{settings.analytics_snapshots_retention_days}d",

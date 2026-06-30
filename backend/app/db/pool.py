@@ -718,17 +718,17 @@ class Database:
             return {}
 
         cleanup_specs = [
-            ("trades", "trade_time", settings.trades_retention_days),
-            ("order_book_top", "received_at", settings.order_book_retention_days),
-            ("candles", "open_time", settings.candles_retention_days),
-            ("analytics_events", "occurred_at", settings.analytics_events_retention_days),
-            ("analytics_snapshots", "computed_at", settings.analytics_snapshots_retention_days),
-            ("system_events", "occurred_at", settings.system_events_retention_days),
+            ("trades", "trade_time", settings.trades_retention_days, "day"),
+            ("order_book_top", "received_at", settings.order_book_retention_hours, "hour"),
+            ("candles", "open_time", settings.candles_retention_days, "day"),
+            ("analytics_events", "occurred_at", settings.analytics_events_retention_days, "day"),
+            ("analytics_snapshots", "computed_at", settings.analytics_snapshots_retention_days, "day"),
+            ("system_events", "occurred_at", settings.system_events_retention_days, "day"),
         ]
         deleted: dict[str, int] = {}
         async with self.pool.acquire() as conn:
-            for table_name, timestamp_column, retention_days in cleanup_specs:
-                if retention_days <= 0:
+            for table_name, timestamp_column, retention_value, retention_unit in cleanup_specs:
+                if retention_value <= 0:
                     continue
                 result = await conn.execute(
                     f"""
@@ -736,12 +736,12 @@ class Database:
                     WHERE id IN (
                       SELECT id
                       FROM {table_name}
-                      WHERE {timestamp_column} < now() - ($1::int * interval '1 day')
+                      WHERE {timestamp_column} < now() - ($1::int * interval '1 {retention_unit}')
                       ORDER BY {timestamp_column}
                       LIMIT $2
                     )
                     """,
-                    retention_days,
+                    retention_value,
                     settings.retention_delete_limit,
                 )
                 deleted[table_name] = int(result.rsplit(" ", 1)[-1])

@@ -32,8 +32,8 @@ class Settings(BaseSettings):
     retention_enabled: bool = True
     retention_initial_delay_seconds: int = 60
     retention_interval_seconds: int = 900
-    trades_retention_days: int = 7
-    order_book_retention_days: int = 1
+    trades_retention_days: int = 2
+    order_book_retention_hours: int = 6
     candles_retention_days: int = 180
     analytics_events_retention_days: int = 30
     analytics_snapshots_retention_days: int = 30
