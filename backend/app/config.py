@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     trend_alert_abs_score: float = 5.0
     volume_zscore_alert: float = 3.0
     liquidity_collapse_alert_pct: float = 50.0
+    simulation_default_exchange: str = "binance"
+    simulation_fill_price_source: str = "mid"
+    simulation_fee_bps: float = 10.0
+    simulation_slippage_bps: float = 1.0
+    simulation_latency_ms: int = 250
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     retention_enabled: bool = True
     retention_initial_delay_seconds: int = 60

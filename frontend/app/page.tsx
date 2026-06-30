@@ -9,6 +9,7 @@ import {
   BookOpen,
   CalendarDays,
   LayoutDashboard,
+  PlaySquare,
   Search,
   ShieldCheck,
   WalletCards
@@ -161,6 +162,13 @@ export default function DashboardPage() {
             >
               <Activity className="h-4 w-4" aria-hidden />
               Analytics
+            </Link>
+            <Link
+              href="/simulation"
+              className="flex h-10 w-full items-center gap-3 rounded-lg px-3 text-left text-muted hover:bg-white/5 hover:text-white"
+            >
+              <PlaySquare className="h-4 w-4" aria-hidden />
+              Simulation
             </Link>
             {[
               ["Research", BookOpen],

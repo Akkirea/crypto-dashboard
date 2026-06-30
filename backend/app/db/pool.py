@@ -574,6 +574,79 @@ class Database:
         )
         return [_decode_json_fields(dict(row), "payload") for row in rows]
 
+    async def fetch_recent_trades(
+        self,
+        symbol: str,
+        *,
+        exchange: str = "binance",
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        if not self.pool:
+            return []
+        rows = await self.pool.fetch(
+            """
+            SELECT exchange, symbol, trade_id, price, quantity, buyer_maker,
+                   event_time, trade_time, received_at, ingest_latency_ms
+            FROM trades
+            WHERE exchange = $1 AND symbol = $2
+            ORDER BY trade_time DESC
+            LIMIT $3
+            """,
+            exchange.lower(),
+            symbol.upper(),
+            limit,
+        )
+        return [dict(row) for row in reversed(rows)]
+
+    async def fetch_recent_candles(
+        self,
+        symbol: str,
+        interval: str,
+        *,
+        exchange: str = "binance",
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        if not self.pool:
+            return []
+        rows = await self.pool.fetch(
+            """
+            SELECT exchange, symbol, interval, open_time, close_time,
+                   open, high, low, close, volume, quote_volume,
+                   trade_count, is_closed, received_at
+            FROM candles
+            WHERE exchange = $1 AND symbol = $2 AND interval = $3
+            ORDER BY open_time DESC
+            LIMIT $4
+            """,
+            exchange.lower(),
+            symbol.upper(),
+            interval,
+            limit,
+        )
+        return [dict(row) for row in reversed(rows)]
+
+    async def fetch_latest_book_top(
+        self,
+        symbol: str,
+        *,
+        exchange: str = "binance",
+    ) -> Optional[dict[str, Any]]:
+        if not self.pool:
+            return None
+        row = await self.pool.fetchrow(
+            """
+            SELECT exchange, symbol, bid_price, bid_quantity, ask_price, ask_quantity,
+                   spread, spread_bps, event_time, received_at, ingest_latency_ms
+            FROM order_book_top
+            WHERE exchange = $1 AND symbol = $2
+            ORDER BY received_at DESC
+            LIMIT 1
+            """,
+            exchange.lower(),
+            symbol.upper(),
+        )
+        return dict(row) if row else None
+
     async def fetch_storage_summary(self) -> dict[str, Any]:
         stats = await self.table_stats()
         if not self.pool:
