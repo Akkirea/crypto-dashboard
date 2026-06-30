@@ -257,6 +257,42 @@ def upgrade() -> None:
         CREATE INDEX IF NOT EXISTS idx_simulation_equity_portfolio_time
         ON simulation_equity_snapshots(portfolio_id, created_at DESC);
 
+        CREATE TABLE IF NOT EXISTS simulation_backtest_runs (
+          id BIGSERIAL PRIMARY KEY,
+          exchange TEXT NOT NULL,
+          symbol TEXT NOT NULL,
+          interval TEXT NOT NULL,
+          strategy TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'completed',
+          parameters JSONB NOT NULL DEFAULT '{}'::jsonb,
+          sample JSONB NOT NULL DEFAULT '{}'::jsonb,
+          summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+          equity_curve JSONB NOT NULL DEFAULT '[]'::jsonb,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_simulation_backtest_runs_time
+        ON simulation_backtest_runs(created_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_simulation_backtest_runs_symbol_time
+        ON simulation_backtest_runs(symbol, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS simulation_backtest_trades (
+          id BIGSERIAL PRIMARY KEY,
+          run_id BIGINT NOT NULL REFERENCES simulation_backtest_runs(id) ON DELETE CASCADE,
+          trade_time TIMESTAMPTZ NOT NULL,
+          side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
+          price NUMERIC(30, 8) NOT NULL,
+          quantity NUMERIC(30, 8) NOT NULL,
+          notional NUMERIC(30, 8) NOT NULL,
+          fee NUMERIC(30, 8) NOT NULL,
+          realized_pnl NUMERIC(30, 8) NOT NULL,
+          reason TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_simulation_backtest_trades_run_time
+        ON simulation_backtest_trades(run_id, trade_time);
+
         INSERT INTO simulation_portfolios(id, cash_balance, initial_cash)
         VALUES ('default', 100000, 100000)
         ON CONFLICT (id) DO NOTHING;
@@ -275,6 +311,8 @@ def downgrade() -> None:
     op.execute(
         """
         DROP TABLE IF EXISTS analytics_snapshots;
+        DROP TABLE IF EXISTS simulation_backtest_trades;
+        DROP TABLE IF EXISTS simulation_backtest_runs;
         DROP TABLE IF EXISTS simulation_equity_snapshots;
         DROP TABLE IF EXISTS simulation_positions;
         DROP TABLE IF EXISTS simulation_fills;

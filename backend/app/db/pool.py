@@ -27,6 +27,14 @@ def _decode_json_fields(row: dict[str, Any], *fields: str) -> dict[str, Any]:
     return row
 
 
+def _json_default(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    return str(value)
+
+
 class Database:
     def __init__(self) -> None:
         self.pool: Optional[asyncpg.Pool] = None
@@ -319,6 +327,42 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_simulation_equity_portfolio_time
                 ON simulation_equity_snapshots(portfolio_id, created_at DESC);
 
+                CREATE TABLE IF NOT EXISTS simulation_backtest_runs (
+                  id BIGSERIAL PRIMARY KEY,
+                  exchange TEXT NOT NULL,
+                  symbol TEXT NOT NULL,
+                  interval TEXT NOT NULL,
+                  strategy TEXT NOT NULL,
+                  status TEXT NOT NULL DEFAULT 'completed',
+                  parameters JSONB NOT NULL DEFAULT '{}'::jsonb,
+                  sample JSONB NOT NULL DEFAULT '{}'::jsonb,
+                  summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+                  equity_curve JSONB NOT NULL DEFAULT '[]'::jsonb,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_simulation_backtest_runs_time
+                ON simulation_backtest_runs(created_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_simulation_backtest_runs_symbol_time
+                ON simulation_backtest_runs(symbol, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS simulation_backtest_trades (
+                  id BIGSERIAL PRIMARY KEY,
+                  run_id BIGINT NOT NULL REFERENCES simulation_backtest_runs(id) ON DELETE CASCADE,
+                  trade_time TIMESTAMPTZ NOT NULL,
+                  side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
+                  price NUMERIC(30, 8) NOT NULL,
+                  quantity NUMERIC(30, 8) NOT NULL,
+                  notional NUMERIC(30, 8) NOT NULL,
+                  fee NUMERIC(30, 8) NOT NULL,
+                  realized_pnl NUMERIC(30, 8) NOT NULL,
+                  reason TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_simulation_backtest_trades_run_time
+                ON simulation_backtest_trades(run_id, trade_time);
+
                 INSERT INTO symbols(symbol, base_asset, quote_asset)
                 VALUES
                   ('BTCUSDT', 'BTC', 'USDT'),
@@ -595,7 +639,9 @@ class Database:
               'simulation_orders',
               'simulation_fills',
               'simulation_positions',
-              'simulation_equity_snapshots'
+              'simulation_equity_snapshots',
+              'simulation_backtest_runs',
+              'simulation_backtest_trades'
             )
             ORDER BY pg_total_relation_size(relid) DESC
             """
@@ -743,6 +789,137 @@ class Database:
             limit,
         )
         return [dict(row) for row in reversed(rows)]
+
+    async def save_backtest_run(
+        self,
+        result: dict[str, Any],
+        *,
+        exchange: str = "binance",
+    ) -> Optional[dict[str, Any]]:
+        if not self.pool:
+            return None
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                run = await conn.fetchrow(
+                    """
+                    INSERT INTO simulation_backtest_runs(
+                      exchange, symbol, interval, strategy, status,
+                      parameters, sample, summary, equity_curve
+                    )
+                    VALUES ($1,$2,$3,$4,'completed',$5::jsonb,$6::jsonb,$7::jsonb,$8::jsonb)
+                    RETURNING id, exchange, symbol, interval, strategy, status,
+                              parameters, sample, summary, equity_curve, created_at
+                    """,
+                    exchange.lower(),
+                    result["symbol"],
+                    result["interval"],
+                    result["strategy"],
+                    json.dumps(result.get("parameters", {}), default=_json_default),
+                    json.dumps(result.get("sample", {}), default=_json_default),
+                    json.dumps(result.get("summary", {}), default=_json_default),
+                    json.dumps(result.get("equity_curve", []), default=_json_default),
+                )
+                trades = result.get("trades", [])
+                if trades:
+                    await conn.executemany(
+                        """
+                        INSERT INTO simulation_backtest_trades(
+                          run_id, trade_time, side, price, quantity,
+                          notional, fee, realized_pnl, reason
+                        )
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                        """,
+                        [
+                            (
+                                run["id"],
+                                trade["time"],
+                                trade["side"],
+                                Decimal(str(trade["price"])),
+                                Decimal(str(trade["quantity"])),
+                                Decimal(str(trade["notional"])),
+                                Decimal(str(trade["fee"])),
+                                Decimal(str(trade["realized_pnl"])),
+                                trade["reason"],
+                            )
+                            for trade in trades
+                        ],
+                    )
+        saved = _decode_json_fields(dict(run), "parameters", "sample", "summary", "equity_curve")
+        saved["trade_count"] = len(result.get("trades", []))
+        return saved
+
+    async def fetch_backtest_runs(
+        self,
+        *,
+        symbol: Optional[str] = None,
+        limit: int = 25,
+    ) -> list[dict[str, Any]]:
+        if not self.pool:
+            return []
+        values: list[Any] = []
+        where_clause = ""
+        if symbol:
+            values.append(symbol.upper())
+            where_clause = f"WHERE symbol = ${len(values)}"
+        values.append(limit)
+        rows = await self.pool.fetch(
+            f"""
+            SELECT
+              r.id,
+              r.exchange,
+              r.symbol,
+              r.interval,
+              r.strategy,
+              r.status,
+              r.parameters,
+              r.sample,
+              r.summary,
+              r.created_at,
+              count(t.id)::int AS trade_count
+            FROM simulation_backtest_runs r
+            LEFT JOIN simulation_backtest_trades t ON t.run_id = r.id
+            {where_clause}
+            GROUP BY r.id
+            ORDER BY r.created_at DESC
+            LIMIT ${len(values)}
+            """,
+            *values,
+        )
+        return [
+            _decode_json_fields(dict(row), "parameters", "sample", "summary")
+            for row in rows
+        ]
+
+    async def fetch_backtest_run(self, run_id: int) -> Optional[dict[str, Any]]:
+        if not self.pool:
+            return None
+        async with self.pool.acquire() as conn:
+            run = await conn.fetchrow(
+                """
+                SELECT id, exchange, symbol, interval, strategy, status,
+                       parameters, sample, summary, equity_curve, created_at
+                FROM simulation_backtest_runs
+                WHERE id = $1
+                """,
+                run_id,
+            )
+            if not run:
+                return None
+            trades = await conn.fetch(
+                """
+                SELECT id, run_id, trade_time AS time, side, price, quantity,
+                       notional, fee, realized_pnl, reason
+                FROM simulation_backtest_trades
+                WHERE run_id = $1
+                ORDER BY trade_time
+                """,
+                run_id,
+            )
+        payload = _decode_json_fields(dict(run), "parameters", "sample", "summary", "equity_curve")
+        payload["trades"] = [dict(row) for row in trades]
+        payload["type"] = "backtest_result"
+        payload["read_only"] = True
+        return payload
 
     async def fetch_latest_book_top(
         self,

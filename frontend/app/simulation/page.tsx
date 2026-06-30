@@ -16,6 +16,7 @@ import { backendHttpUrl } from "@/lib/backendConfig";
 import { fmtPrice, toNumber } from "@/lib/format";
 import {
   BacktestResult,
+  BacktestRunSummary,
   SimulationCandle,
   SimulationConfig,
   SimulationFill,
@@ -37,6 +38,7 @@ export default function SimulationPage() {
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [quantity, setQuantity] = useState("0.001");
   const [backtest, setBacktest] = useState<BacktestResult | null>(null);
+  const [backtestRuns, setBacktestRuns] = useState<BacktestRunSummary[]>([]);
   const [shortWindow, setShortWindow] = useState("5");
   const [longWindow, setLongWindow] = useState("20");
   const [backtestLimit, setBacktestLimit] = useState("500");
@@ -55,6 +57,7 @@ export default function SimulationPage() {
         if (!closed) {
           setConfig(data);
           setSymbol(data.symbols[0] ?? "BTCUSDT");
+          void loadBacktestRuns();
         }
       } catch (caught) {
         if (!closed) setError(caught instanceof Error ? caught.message : "simulation config unavailable");
@@ -189,7 +192,8 @@ export default function SimulationPage() {
           short_window: Number(shortWindow),
           long_window: Number(longWindow),
           limit: Number(backtestLimit),
-          initial_cash: 10000
+          initial_cash: 10000,
+          persist: true
         })
       });
       if (!response.ok) {
@@ -197,9 +201,34 @@ export default function SimulationPage() {
         throw new Error(body?.detail ?? `HTTP ${response.status}`);
       }
       setBacktest((await response.json()) as BacktestResult);
+      await loadBacktestRuns();
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "backtest failed");
+    } finally {
+      setBacktesting(false);
+    }
+  }
+
+  async function loadBacktestRuns() {
+    const response = await fetch(`${backendHttpUrl()}/api/simulation/backtests/runs?limit=10`, {
+      cache: "no-store"
+    });
+    if (!response.ok) return;
+    setBacktestRuns((await response.json()) as BacktestRunSummary[]);
+  }
+
+  async function loadBacktestRun(runId: number) {
+    setBacktesting(true);
+    try {
+      const response = await fetch(`${backendHttpUrl()}/api/simulation/backtests/runs/${runId}`, {
+        cache: "no-store"
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      setBacktest((await response.json()) as BacktestResult);
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "backtest run unavailable");
     } finally {
       setBacktesting(false);
     }
@@ -381,11 +410,13 @@ export default function SimulationPage() {
             longWindow={longWindow}
             limit={backtestLimit}
             result={backtest}
+            runs={backtestRuns}
             running={backtesting}
             onShortWindowChange={setShortWindow}
             onLongWindowChange={setLongWindow}
             onLimitChange={setBacktestLimit}
             onRun={runBacktest}
+            onLoadRun={loadBacktestRun}
           />
         </section>
       </div>
@@ -477,22 +508,26 @@ function BacktestPanel({
   longWindow,
   limit,
   result,
+  runs,
   running,
   onShortWindowChange,
   onLongWindowChange,
   onLimitChange,
-  onRun
+  onRun,
+  onLoadRun
 }: {
   symbol: string;
   shortWindow: string;
   longWindow: string;
   limit: string;
   result: BacktestResult | null;
+  runs: BacktestRunSummary[];
   running: boolean;
   onShortWindowChange: (value: string) => void;
   onLongWindowChange: (value: string) => void;
   onLimitChange: (value: string) => void;
   onRun: () => void;
+  onLoadRun: (runId: number) => void;
 }) {
   const latestEquity = result?.equity_curve.at(-1);
   const visibleTrades = result?.trades.slice(-8).reverse() ?? [];
@@ -588,6 +623,31 @@ function BacktestPanel({
           ))}
           {!visibleTrades.length ? <div className="px-3 py-4 text-sm text-muted">No backtest trades yet.</div> : null}
         </section>
+      </section>
+
+      <section className="mt-4 overflow-hidden rounded-lg border border-white/[0.08]">
+        <div className="grid grid-cols-[70px_1fr_1fr_1fr_1fr] border-b border-line bg-white/[0.03] px-3 py-2 text-xs text-muted">
+          <span>Run</span>
+          <span>Symbol</span>
+          <span className="text-right">Return</span>
+          <span className="text-right">Trades</span>
+          <span className="text-right">Created</span>
+        </div>
+        {runs.map((run) => (
+          <button
+            key={run.id}
+            type="button"
+            onClick={() => onLoadRun(run.id)}
+            className="grid w-full grid-cols-[70px_1fr_1fr_1fr_1fr] border-b border-white/[0.06] px-3 py-2 text-left text-sm tabular-nums hover:bg-white/[0.04]"
+          >
+            <span className="text-gold">#{run.id}</span>
+            <span className="font-medium text-white">{run.symbol}</span>
+            <span className="text-right">{fmtPrice(toNumber(run.summary.total_return_pct))}%</span>
+            <span className="text-right text-muted">{run.trade_count}</span>
+            <span className="text-right text-muted">{new Date(run.created_at).toLocaleTimeString()}</span>
+          </button>
+        ))}
+        {!runs.length ? <div className="px-3 py-4 text-sm text-muted">No saved backtest runs yet.</div> : null}
       </section>
     </section>
   );

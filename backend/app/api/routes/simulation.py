@@ -35,6 +35,7 @@ class BacktestRequest(BaseModel):
     short_window: int = Field(default=5, ge=2, le=200)
     long_window: int = Field(default=20, ge=3, le=500)
     limit: int = Field(default=500, ge=50, le=2000)
+    persist: bool = True
 
 
 @router.get("/config")
@@ -142,6 +143,27 @@ async def backtest_strategies() -> dict[str, object]:
     }
 
 
+@router.get("/backtests/runs")
+async def backtest_runs(
+    request: Request,
+    symbol: Optional[str] = Query(None, max_length=32),
+    limit: int = Query(25, ge=1, le=100),
+) -> list[dict[str, object]]:
+    normalized_symbol = _validate_symbol(symbol) if symbol else None
+    return await request.app.state.db.fetch_backtest_runs(
+        symbol=normalized_symbol,
+        limit=limit,
+    )
+
+
+@router.get("/backtests/runs/{run_id}")
+async def backtest_run(request: Request, run_id: int) -> dict[str, object]:
+    run = await request.app.state.db.fetch_backtest_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"backtest run not found: {run_id}")
+    return jsonable_encoder(run)
+
+
 @router.post("/backtests")
 async def run_backtest(request: Request, payload: BacktestRequest) -> dict[str, object]:
     symbol = _validate_symbol(payload.symbol)
@@ -171,6 +193,14 @@ async def run_backtest(request: Request, payload: BacktestRequest) -> dict[str, 
             slippage_bps=Decimal(str(settings.simulation_slippage_bps)),
         ),
     )
+    if payload.persist:
+        saved = await request.app.state.db.save_backtest_run(
+            result,
+            exchange=settings.simulation_default_exchange,
+        )
+        if saved:
+            result["run_id"] = saved["id"]
+            result["created_at"] = saved["created_at"]
     return jsonable_encoder(result)
 
 

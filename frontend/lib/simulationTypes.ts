@@ -125,6 +125,9 @@ export type SimulationFill = {
 export type BacktestResult = {
   type: "backtest_result";
   read_only: boolean;
+  run_id?: number;
+  id?: number;
+  created_at?: string;
   strategy: "sma_cross";
   symbol: string;
   interval: string;
@@ -170,4 +173,18 @@ export type BacktestResult = {
     quantity: string | number;
     mark_price: string | number;
   }>;
+};
+
+export type BacktestRunSummary = {
+  id: number;
+  exchange: string;
+  symbol: string;
+  interval: string;
+  strategy: "sma_cross";
+  status: string;
+  parameters: BacktestResult["parameters"];
+  sample: BacktestResult["sample"];
+  summary: BacktestResult["summary"];
+  trade_count: number;
+  created_at: string;
 };
