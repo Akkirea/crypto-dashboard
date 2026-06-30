@@ -14,6 +14,11 @@ export type SimulationConfig = {
     latency_ms: number;
   };
   data_sources: Record<string, string>;
+  backtesting?: {
+    enabled: boolean;
+    strategies: string[];
+    data_source: string;
+  };
 };
 
 export type SimulationSnapshot = {
@@ -115,4 +120,54 @@ export type SimulationFill = {
   notional: string | number;
   fee: string | number;
   created_at: string;
+};
+
+export type BacktestResult = {
+  type: "backtest_result";
+  read_only: boolean;
+  strategy: "sma_cross";
+  symbol: string;
+  interval: string;
+  parameters: {
+    short_window: number;
+    long_window: number;
+    fee_bps: number;
+    slippage_bps: number;
+    initial_cash: number;
+  };
+  sample: {
+    candle_count: number;
+    start: string | null;
+    end: string | null;
+  };
+  summary: {
+    initial_cash: string | number;
+    final_equity: string | number;
+    cash: string | number;
+    position_quantity: string | number;
+    position_mark: string | number;
+    realized_pnl: string | number;
+    total_return_pct: string | number | null;
+    max_drawdown_pct: string | number;
+    trade_count: number;
+    closed_trade_count: number;
+    win_rate_pct: string | number | null;
+  };
+  trades: Array<{
+    time: string;
+    side: "buy" | "sell";
+    price: string | number;
+    quantity: string | number;
+    fee: string | number;
+    notional: string | number;
+    realized_pnl: string | number;
+    reason: string;
+  }>;
+  equity_curve: Array<{
+    time: string;
+    equity: string | number;
+    cash: string | number;
+    quantity: string | number;
+    mark_price: string | number;
+  }>;
 };

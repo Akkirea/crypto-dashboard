@@ -4,9 +4,11 @@ from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.simulation.backtest import BacktestConfig, run_sma_cross_backtest
 
 router = APIRouter(prefix="/api/simulation", tags=["simulation"])
 
@@ -23,6 +25,16 @@ class SimulatedMarketOrderRequest(BaseModel):
     symbol: str = Field(..., max_length=32)
     side: str = Field(..., pattern="^(buy|sell)$")
     quantity: Decimal = Field(..., gt=0)
+
+
+class BacktestRequest(BaseModel):
+    symbol: str = Field(..., max_length=32)
+    interval: str = Field(default="1m", pattern="^(1m|5m)$")
+    strategy: str = Field(default="sma_cross", pattern="^sma_cross$")
+    initial_cash: Decimal = Field(default=Decimal("10000"), gt=0)
+    short_window: int = Field(default=5, ge=2, le=200)
+    long_window: int = Field(default=20, ge=3, le=500)
+    limit: int = Field(default=500, ge=50, le=2000)
 
 
 @router.get("/config")
@@ -47,6 +59,11 @@ async def simulation_config() -> dict[str, object]:
             "trades": "postgres_trades",
             "candles": "postgres_candles",
             "book_top": "postgres_order_book_top",
+        },
+        "backtesting": {
+            "enabled": True,
+            "strategies": ["sma_cross"],
+            "data_source": "postgres_closed_candles",
         },
     }
 
@@ -104,6 +121,57 @@ async def latest_book(
         _validate_symbol(symbol),
         exchange=(exchange or settings.simulation_default_exchange).lower(),
     )
+
+
+@router.get("/backtests/strategies")
+async def backtest_strategies() -> dict[str, object]:
+    return {
+        "read_only": True,
+        "strategies": [
+            {
+                "name": "sma_cross",
+                "label": "SMA Crossover",
+                "description": "Long-only candle backtest that buys when the short SMA crosses above the long SMA and exits on the reverse cross.",
+                "parameters": {
+                    "short_window": {"default": 5, "min": 2, "max": 200},
+                    "long_window": {"default": 20, "min": 3, "max": 500},
+                    "limit": {"default": 500, "min": 50, "max": 2000},
+                },
+            }
+        ],
+    }
+
+
+@router.post("/backtests")
+async def run_backtest(request: Request, payload: BacktestRequest) -> dict[str, object]:
+    symbol = _validate_symbol(payload.symbol)
+    if payload.short_window >= payload.long_window:
+        raise HTTPException(status_code=422, detail="short_window must be lower than long_window")
+    candles = await request.app.state.db.fetch_backtest_candles(
+        symbol,
+        payload.interval,
+        exchange=settings.simulation_default_exchange,
+        limit=payload.limit,
+    )
+    if len(candles) < payload.long_window:
+        raise HTTPException(
+            status_code=409,
+            detail=f"not enough closed candles for backtest: have {len(candles)}, need {payload.long_window}",
+        )
+
+    result = run_sma_cross_backtest(
+        candles,
+        BacktestConfig(
+            symbol=symbol,
+            interval=payload.interval,
+            initial_cash=payload.initial_cash,
+            short_window=payload.short_window,
+            long_window=payload.long_window,
+            fee_bps=Decimal(str(settings.simulation_fee_bps)),
+            slippage_bps=Decimal(str(settings.simulation_slippage_bps)),
+        ),
+    )
+    return jsonable_encoder(result)
 
 
 @router.get("/portfolio")

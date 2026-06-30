@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   ChevronLeft,
   Database,
+  LineChart,
   PlaySquare,
   RotateCcw,
   Send,
@@ -14,6 +15,7 @@ import {
 import { backendHttpUrl } from "@/lib/backendConfig";
 import { fmtPrice, toNumber } from "@/lib/format";
 import {
+  BacktestResult,
   SimulationCandle,
   SimulationConfig,
   SimulationFill,
@@ -34,7 +36,12 @@ export default function SimulationPage() {
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [quantity, setQuantity] = useState("0.001");
+  const [backtest, setBacktest] = useState<BacktestResult | null>(null);
+  const [shortWindow, setShortWindow] = useState("5");
+  const [longWindow, setLongWindow] = useState("20");
+  const [backtestLimit, setBacktestLimit] = useState("500");
   const [submitting, setSubmitting] = useState(false);
+  const [backtesting, setBacktesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -166,6 +173,35 @@ export default function SimulationPage() {
       setError(caught instanceof Error ? caught.message : "portfolio reset failed");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function runBacktest() {
+    setBacktesting(true);
+    try {
+      const response = await fetch(`${backendHttpUrl()}/api/simulation/backtests`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol,
+          interval: "1m",
+          strategy: "sma_cross",
+          short_window: Number(shortWindow),
+          long_window: Number(longWindow),
+          limit: Number(backtestLimit),
+          initial_cash: 10000
+        })
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.detail ?? `HTTP ${response.status}`);
+      }
+      setBacktest((await response.json()) as BacktestResult);
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "backtest failed");
+    } finally {
+      setBacktesting(false);
     }
   }
 
@@ -338,6 +374,19 @@ export default function SimulationPage() {
             <PaperOrders orders={orders} />
             <PaperFills fills={fills} />
           </section>
+
+          <BacktestPanel
+            symbol={symbol}
+            shortWindow={shortWindow}
+            longWindow={longWindow}
+            limit={backtestLimit}
+            result={backtest}
+            running={backtesting}
+            onShortWindowChange={setShortWindow}
+            onLongWindowChange={setLongWindow}
+            onLimitChange={setBacktestLimit}
+            onRun={runBacktest}
+          />
         </section>
       </div>
     </main>
@@ -419,6 +468,150 @@ function PaperFills({ fills }: { fills: SimulationFill[] }) {
         <div className="py-4 text-sm text-muted">No simulated fills.</div>
       )}
     </section>
+  );
+}
+
+function BacktestPanel({
+  symbol,
+  shortWindow,
+  longWindow,
+  limit,
+  result,
+  running,
+  onShortWindowChange,
+  onLongWindowChange,
+  onLimitChange,
+  onRun
+}: {
+  symbol: string;
+  shortWindow: string;
+  longWindow: string;
+  limit: string;
+  result: BacktestResult | null;
+  running: boolean;
+  onShortWindowChange: (value: string) => void;
+  onLongWindowChange: (value: string) => void;
+  onLimitChange: (value: string) => void;
+  onRun: () => void;
+}) {
+  const latestEquity = result?.equity_curve.at(-1);
+  const visibleTrades = result?.trades.slice(-8).reverse() ?? [];
+
+  return (
+    <section className="mt-5 rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <LineChart className="h-4 w-4 text-gold" aria-hidden />
+          <div>
+            <h2 className="text-sm font-semibold text-ink">Historical Backtest</h2>
+            <p className="mt-1 text-xs text-muted">SMA crossover on persisted closed candles for {symbol}</p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onRun}
+          disabled={running}
+          className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-gold/40 bg-gold/20 px-4 text-sm font-medium text-white hover:bg-gold/25 disabled:opacity-50"
+        >
+          <PlaySquare className="h-4 w-4" aria-hidden />
+          {running ? "Running" : "Run Backtest"}
+        </button>
+      </div>
+
+      <div className="mb-4 grid gap-3 md:grid-cols-3">
+        <BacktestInput label="Short SMA" value={shortWindow} onChange={onShortWindowChange} />
+        <BacktestInput label="Long SMA" value={longWindow} onChange={onLongWindowChange} />
+        <BacktestInput label="Candle Limit" value={limit} onChange={onLimitChange} />
+      </div>
+
+      <section className="grid gap-3 md:grid-cols-5">
+        <Metric
+          label="Return"
+          value={`${fmtPrice(toNumber(result?.summary.total_return_pct))}%`}
+          detail={`${result?.sample.candle_count ?? 0} candles`}
+        />
+        <Metric
+          label="Equity"
+          value={`$${fmtPrice(toNumber(result?.summary.final_equity))}`}
+          detail={`Latest $${fmtPrice(toNumber(latestEquity?.mark_price))}`}
+        />
+        <Metric
+          label="Drawdown"
+          value={`${fmtPrice(toNumber(result?.summary.max_drawdown_pct))}%`}
+          detail="Max peak-to-trough"
+        />
+        <Metric
+          label="Trades"
+          value={`${result?.summary.trade_count ?? 0}`}
+          detail={`${result?.summary.closed_trade_count ?? 0} closed`}
+        />
+        <Metric
+          label="Win Rate"
+          value={`${fmtPrice(toNumber(result?.summary.win_rate_pct))}%`}
+          detail="Closed trades"
+        />
+      </section>
+
+      <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.8fr)]">
+        <section className="overflow-hidden rounded-lg border border-white/[0.08]">
+          <div className="grid grid-cols-[1fr_1fr_1fr_1fr] border-b border-line bg-white/[0.03] px-3 py-2 text-xs text-muted">
+            <span>Time</span>
+            <span className="text-right">Equity</span>
+            <span className="text-right">Cash</span>
+            <span className="text-right">Position</span>
+          </div>
+          {(result?.equity_curve.slice(-8).reverse() ?? []).map((point) => (
+            <div key={point.time} className="grid grid-cols-[1fr_1fr_1fr_1fr] border-b border-white/[0.06] px-3 py-2 text-sm tabular-nums">
+              <span className="text-muted">{new Date(point.time).toLocaleString()}</span>
+              <span className="text-right text-white">{fmtPrice(toNumber(point.equity))}</span>
+              <span className="text-right">{fmtPrice(toNumber(point.cash))}</span>
+              <span className="text-right text-muted">{fmtPrice(toNumber(point.quantity))}</span>
+            </div>
+          ))}
+          {!result ? <div className="px-3 py-4 text-sm text-muted">Run a backtest to see equity history.</div> : null}
+        </section>
+
+        <section className="overflow-hidden rounded-lg border border-white/[0.08]">
+          <div className="grid grid-cols-[60px_1fr_1fr_1fr] border-b border-line bg-white/[0.03] px-3 py-2 text-xs text-muted">
+            <span>Side</span>
+            <span className="text-right">Price</span>
+            <span className="text-right">Qty</span>
+            <span className="text-right">PnL</span>
+          </div>
+          {visibleTrades.map((trade) => (
+            <div key={`${trade.time}-${trade.side}`} className="grid grid-cols-[60px_1fr_1fr_1fr] border-b border-white/[0.06] px-3 py-2 text-sm tabular-nums">
+              <span className={trade.side === "buy" ? "text-buy" : "text-sell"}>{trade.side}</span>
+              <span className="text-right text-white">{fmtPrice(toNumber(trade.price))}</span>
+              <span className="text-right text-muted">{fmtPrice(toNumber(trade.quantity))}</span>
+              <span className="text-right">{fmtPrice(toNumber(trade.realized_pnl))}</span>
+            </div>
+          ))}
+          {!visibleTrades.length ? <div className="px-3 py-4 text-sm text-muted">No backtest trades yet.</div> : null}
+        </section>
+      </section>
+    </section>
+  );
+}
+
+function BacktestInput({
+  label,
+  value,
+  onChange
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block text-xs text-muted">
+      {label}
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="mt-2 h-10 w-full rounded-lg border border-white/10 bg-black/30 px-3 text-sm text-white outline-none focus:border-gold/50"
+        inputMode="numeric"
+      />
+    </label>
   );
 }
 

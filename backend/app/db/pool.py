@@ -714,6 +714,36 @@ class Database:
         )
         return [dict(row) for row in reversed(rows)]
 
+    async def fetch_backtest_candles(
+        self,
+        symbol: str,
+        interval: str,
+        *,
+        exchange: str = "binance",
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        if not self.pool:
+            return []
+        rows = await self.pool.fetch(
+            """
+            SELECT exchange, symbol, interval, open_time, close_time,
+                   open, high, low, close, volume, quote_volume,
+                   trade_count, is_closed, received_at
+            FROM candles
+            WHERE exchange = $1
+              AND symbol = $2
+              AND interval = $3
+              AND is_closed = true
+            ORDER BY open_time DESC
+            LIMIT $4
+            """,
+            exchange.lower(),
+            symbol.upper(),
+            interval,
+            limit,
+        )
+        return [dict(row) for row in reversed(rows)]
+
     async def fetch_latest_book_top(
         self,
         symbol: str,
