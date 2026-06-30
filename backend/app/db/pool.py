@@ -173,6 +173,23 @@ class Database:
                   occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 );
 
+                CREATE TABLE IF NOT EXISTS system_events (
+                  id BIGSERIAL PRIMARY KEY,
+                  component TEXT NOT NULL,
+                  event_type TEXT NOT NULL,
+                  severity TEXT NOT NULL DEFAULT 'info',
+                  status TEXT,
+                  message TEXT,
+                  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                  occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_system_events_time
+                ON system_events(occurred_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_system_events_component_time
+                ON system_events(component, occurred_at DESC);
+
                 CREATE TABLE IF NOT EXISTS analytics_events (
                   id BIGSERIAL PRIMARY KEY,
                   event_type TEXT NOT NULL,
@@ -472,6 +489,7 @@ class Database:
               'order_book_top',
               'order_book_rollups',
               'candles',
+              'system_events',
               'analytics_events',
               'analytics_snapshots'
             )
@@ -479,6 +497,67 @@ class Database:
             """
         )
         return [dict(row) for row in rows]
+
+    async def record_system_event(
+        self,
+        component: str,
+        event_type: str,
+        *,
+        severity: str = "info",
+        status: Optional[str] = None,
+        message: Optional[str] = None,
+        payload: Optional[dict[str, Any]] = None,
+    ) -> None:
+        if not self.pool:
+            return
+        try:
+            await self.pool.execute(
+                """
+                INSERT INTO system_events(component, event_type, severity, status, message, payload)
+                VALUES ($1,$2,$3,$4,$5,$6::jsonb)
+                """,
+                component,
+                event_type,
+                severity,
+                status,
+                message,
+                json.dumps(payload or {}),
+            )
+        except Exception:
+            logger.exception(
+                "failed to record system event",
+                extra={"component": component, "event_type": event_type},
+            )
+
+    async def fetch_system_events(
+        self,
+        limit: int = 100,
+        component: Optional[str] = None,
+        severity: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        if not self.pool:
+            return []
+        conditions = []
+        values: list[Any] = []
+        if component:
+            values.append(component)
+            conditions.append(f"component = ${len(values)}")
+        if severity:
+            values.append(severity)
+            conditions.append(f"severity = ${len(values)}")
+        values.append(limit)
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        rows = await self.pool.fetch(
+            f"""
+            SELECT component, event_type, severity, status, message, payload, occurred_at
+            FROM system_events
+            {where_clause}
+            ORDER BY occurred_at DESC
+            LIMIT ${len(values)}
+            """,
+            *values,
+        )
+        return [_decode_json_fields(dict(row), "payload") for row in rows]
 
     async def fetch_storage_summary(self) -> dict[str, Any]:
         stats = await self.table_stats()
@@ -629,6 +708,7 @@ class Database:
             ("candles", "open_time", settings.candles_retention_days),
             ("analytics_events", "occurred_at", settings.analytics_events_retention_days),
             ("analytics_snapshots", "computed_at", settings.analytics_snapshots_retention_days),
+            ("system_events", "occurred_at", settings.system_events_retention_days),
         ]
         deleted: dict[str, int] = {}
         async with self.pool.acquire() as conn:

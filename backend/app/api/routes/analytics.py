@@ -130,6 +130,20 @@ async def event_history(
     return await request.app.state.db.fetch_analytics_events(limit=limit)
 
 
+@router.get("/system/events")
+async def system_events(
+    request: Request,
+    component: Optional[str] = Query(None, max_length=64),
+    severity: Optional[str] = Query(None, pattern="^(info|warning|error|critical)$"),
+    limit: int = Query(100, ge=1, le=500),
+) -> list[dict[str, object]]:
+    return await request.app.state.db.fetch_system_events(
+        component=component,
+        severity=severity,
+        limit=limit,
+    )
+
+
 @router.get("/storage")
 async def storage(request: Request) -> dict[str, object]:
     return await request.app.state.db.fetch_storage_summary()

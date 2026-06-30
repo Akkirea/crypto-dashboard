@@ -100,6 +100,23 @@ CREATE TABLE IF NOT EXISTS ingestion_events (
   occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS system_events (
+  id BIGSERIAL PRIMARY KEY,
+  component TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  severity TEXT NOT NULL DEFAULT 'info',
+  status TEXT,
+  message TEXT,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_system_events_time
+ON system_events(occurred_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_system_events_component_time
+ON system_events(component, occurred_at DESC);
+
 CREATE TABLE IF NOT EXISTS analytics_events (
   id BIGSERIAL PRIMARY KEY,
   event_type TEXT NOT NULL,

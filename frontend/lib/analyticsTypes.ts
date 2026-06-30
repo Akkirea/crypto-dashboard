@@ -178,6 +178,16 @@ export type DatabaseHealth = {
   tables: DatabaseTableStat[];
 };
 
+export type SystemEvent = {
+  component: string;
+  event_type: string;
+  severity: "info" | "warning" | "error" | "critical";
+  status: string | null;
+  message: string | null;
+  payload: Record<string, unknown>;
+  occurred_at: string;
+};
+
 export type OrderBookRollupPoint = {
   exchange: string;
   symbol: string;

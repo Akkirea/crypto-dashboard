@@ -32,6 +32,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     broadcaster = Broadcaster()
     db = Database()
     await db.connect()
+    await db.record_system_event(
+        "api",
+        "startup",
+        status="ok",
+        message="backend startup completed",
+        payload={"mode": "read_only"},
+    )
 
     async def handle_event(event: MarketEvent) -> None:
         state.apply(event)
@@ -68,6 +75,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         logger.info("shutting down")
+        await db.record_system_event(
+            "api",
+            "shutdown",
+            status="stopping",
+            message="backend shutdown requested",
+        )
         await client.stop()
         if coinbase_client is not None:
             await coinbase_client.stop()
@@ -123,11 +136,25 @@ async def _run_retention(db: Database) -> None:
             deleted = await db.apply_retention()
             if deleted:
                 logger.info("retention cleanup completed", extra={"deleted": deleted})
+                await db.record_system_event(
+                    "retention",
+                    "cleanup_completed",
+                    status="ok",
+                    message="retention cleanup completed",
+                    payload={"deleted": deleted},
+                )
             await asyncio.sleep(settings.retention_interval_seconds)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             logger.exception("retention cleanup failed")
+            await db.record_system_event(
+                "retention",
+                "cleanup_failed",
+                severity="error",
+                status="failed",
+                message=str(exc),
+            )
 
 
 async def _run_rollups(db: Database) -> None:
@@ -137,11 +164,25 @@ async def _run_rollups(db: Database) -> None:
             refreshed = await db.refresh_order_book_rollups()
             if refreshed:
                 logger.info("order book rollups refreshed", extra={"refreshed": refreshed})
+                await db.record_system_event(
+                    "rollups",
+                    "refresh_completed",
+                    status="ok",
+                    message="order book rollups refreshed",
+                    payload={"refreshed": refreshed},
+                )
             await asyncio.sleep(settings.rollup_interval_seconds)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             logger.exception("order book rollup refresh failed")
+            await db.record_system_event(
+                "rollups",
+                "refresh_failed",
+                severity="error",
+                status="failed",
+                message=str(exc),
+            )
 
 
 app = FastAPI(title="Crypto Market Dashboard Backend", lifespan=lifespan)

@@ -22,6 +22,7 @@ class AnalyticsWorker:
         self.recent_events: deque[dict[str, Any]] = deque(maxlen=100)
         self._stop = asyncio.Event()
         self._last_event_key_at: dict[str, int] = {}
+        self._last_system_success_at = 0.0
 
     async def stop(self) -> None:
         self._stop.set()
@@ -32,8 +33,15 @@ class AnalyticsWorker:
                 await self.compute_once()
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
                 logger.exception("analytics worker iteration failed")
+                await self.db.record_system_event(
+                    "analytics",
+                    "iteration_failed",
+                    severity="error",
+                    status="failed",
+                    message=str(exc),
+                )
             await asyncio.sleep(settings.analytics_interval_seconds)
 
     async def compute_once(self) -> dict[str, Any]:
@@ -48,6 +56,21 @@ class AnalyticsWorker:
         await self.db.save_analytics_snapshot("summary", summary)
         await self.db.save_analytics_snapshots(_family_snapshots(summary))
         await self.db.save_analytics_events(events)
+        now = time.time()
+        if now - self._last_system_success_at >= 60:
+            self._last_system_success_at = now
+            await self.db.record_system_event(
+                "analytics",
+                "iteration_completed",
+                status="ok",
+                message="analytics summary computed",
+                payload={
+                    "analytics_events": len(events),
+                    "trend_rows": len(summary.get("trend_rankings", [])),
+                    "spread_rows": len(summary.get("spread_rankings", [])),
+                    "volatility_rows": len(summary.get("volatility_rankings", [])),
+                },
+            )
         return summary
 
     def _detect_events(self, summary: dict[str, Any]) -> list[dict[str, Any]]:

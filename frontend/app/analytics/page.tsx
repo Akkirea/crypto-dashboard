@@ -6,6 +6,7 @@ import { AnalyticsShell } from "@/components/analytics/AnalyticsShell";
 import { CrossExchangePanel } from "@/components/analytics/CrossExchangePanel";
 import { MetricCard } from "@/components/analytics/MetricCard";
 import { SpreadRankingTable } from "@/components/analytics/SpreadRankingTable";
+import { SystemEventFeed } from "@/components/analytics/SystemEventFeed";
 import { TrendRankTable } from "@/components/analytics/TrendRankTable";
 import { VolatilityRegimePanel } from "@/components/analytics/VolatilityRegimePanel";
 import { VolumeAnomalyPanel } from "@/components/analytics/VolumeAnomalyPanel";
@@ -19,7 +20,8 @@ import {
   AnalyticsStorageSummary,
   AnalyticsSummary,
   DatabaseHealth,
-  OrderBookRollupPoint
+  OrderBookRollupPoint,
+  SystemEvent
 } from "@/lib/analyticsTypes";
 import { backendHttpUrl } from "@/lib/backendConfig";
 import { fmtPrice } from "@/lib/format";
@@ -31,6 +33,7 @@ export default function AnalyticsPage() {
   const [storage, setStorage] = useState<AnalyticsStorageSummary | null>(null);
   const [databaseHealth, setDatabaseHealth] = useState<DatabaseHealth | null>(null);
   const [rollups, setRollups] = useState<OrderBookRollupPoint[]>([]);
+  const [systemEvents, setSystemEvents] = useState<SystemEvent[]>([]);
   const [rollupSymbol, setRollupSymbol] = useState("BTCUSDT");
   const [error, setError] = useState<string | null>(null);
   const [apiUrl, setApiUrl] = useState<string>("");
@@ -104,20 +107,37 @@ export default function AnalyticsPage() {
       }
     }
 
+    async function loadSystemEvents() {
+      try {
+        const httpUrl = backendHttpUrl();
+        const response = await fetch(`${httpUrl}/api/analytics/system/events?limit=50`, {
+          cache: "no-store"
+        });
+        if (!response.ok) return;
+        const data = (await response.json()) as SystemEvent[];
+        if (!closed) setSystemEvents(data);
+      } catch (caught) {
+        console.warn("system events unavailable", caught);
+      }
+    }
+
     load();
     loadEvents();
     loadHistory();
     loadStorage();
+    loadSystemEvents();
     const summaryInterval = window.setInterval(load, 3000);
     const eventsInterval = window.setInterval(loadEvents, 10000);
     const historyInterval = window.setInterval(loadHistory, 60000);
     const storageInterval = window.setInterval(loadStorage, 30000);
+    const systemEventsInterval = window.setInterval(loadSystemEvents, 15000);
     return () => {
       closed = true;
       window.clearInterval(summaryInterval);
       window.clearInterval(eventsInterval);
       window.clearInterval(historyInterval);
       window.clearInterval(storageInterval);
+      window.clearInterval(systemEventsInterval);
     };
   }, []);
 
@@ -189,6 +209,7 @@ export default function AnalyticsPage() {
             symbol={rollupSymbol}
             onSymbolChange={setRollupSymbol}
           />
+          <SystemEventFeed events={systemEvents} />
           <TrendRankTable rows={summary?.trend_rankings ?? []} />
           <VolumeAnomalyPanel rows={summary?.volume_anomalies ?? []} />
           <AnalyticsEventFeed events={events} />

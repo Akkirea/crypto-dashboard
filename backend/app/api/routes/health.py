@@ -67,6 +67,7 @@ async def database_health(request: Request) -> dict[str, object]:
                 "candles": f"{settings.candles_retention_days}d",
                 "analytics_events": f"{settings.analytics_events_retention_days}d",
                 "analytics_snapshots": f"{settings.analytics_snapshots_retention_days}d",
+                "system_events": f"{settings.system_events_retention_days}d",
             },
         },
         "tables": await db.table_stats() if connected else [],
