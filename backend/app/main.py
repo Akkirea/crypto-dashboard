@@ -22,6 +22,7 @@ from app.ingest.kraken_ws import KrakenMarketDataClient
 from app.logging import configure_logging
 from app.services.broadcaster import Broadcaster
 from app.services.market_state import MarketState
+from app.simulation.automation import AutomatedSimulationWorker
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     kraken_client = KrakenMarketDataClient(state, handle_event) if settings.enable_kraken else None
     bybit_client = BybitMarketDataClient(state, handle_event) if settings.enable_bybit else None
     analytics_worker = AnalyticsWorker(state, db)
+    automation_worker = AutomatedSimulationWorker(state, db)
     ingest_task = asyncio.create_task(client.run())
     coinbase_task = (
         asyncio.create_task(coinbase_client.run()) if coinbase_client is not None else None
@@ -60,6 +62,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     bybit_task = asyncio.create_task(bybit_client.run()) if bybit_client is not None else None
     health_task = asyncio.create_task(_publish_health(state, broadcaster))
     analytics_task = asyncio.create_task(analytics_worker.run())
+    automation_task = asyncio.create_task(automation_worker.run())
     db_reconnect_task = asyncio.create_task(_run_database_reconnect(db))
     retention_task = asyncio.create_task(_run_retention(db))
     rollup_task = asyncio.create_task(_run_rollups(db))
@@ -72,6 +75,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.kraken_ingest_client = kraken_client
     app.state.bybit_ingest_client = bybit_client
     app.state.analytics_worker = analytics_worker
+    app.state.automation_worker = automation_worker
 
     try:
         yield
@@ -91,6 +95,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if bybit_client is not None:
             await bybit_client.stop()
         await analytics_worker.stop()
+        await automation_worker.stop()
         ingest_task.cancel()
         if coinbase_task is not None:
             coinbase_task.cancel()
@@ -100,6 +105,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             bybit_task.cancel()
         health_task.cancel()
         analytics_task.cancel()
+        automation_task.cancel()
         db_reconnect_task.cancel()
         retention_task.cancel()
         rollup_task.cancel()
@@ -118,6 +124,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await health_task
         with contextlib.suppress(asyncio.CancelledError):
             await analytics_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await automation_task
         with contextlib.suppress(asyncio.CancelledError):
             await db_reconnect_task
         with contextlib.suppress(asyncio.CancelledError):

@@ -15,6 +15,7 @@ from app.simulation.backtest import (
     run_backtest as run_backtest_engine,
     strategy_definitions,
 )
+from app.simulation.automation import AutomationConfig
 
 router = APIRouter(prefix="/api/simulation", tags=["simulation"])
 
@@ -47,6 +48,27 @@ class BacktestRequest(BaseModel):
     persist: bool = True
 
 
+class AutomationRequest(BaseModel):
+    portfolio_id: str = Field(default="default", max_length=64)
+    symbol: str = Field(default="BTCUSDT", max_length=32)
+    interval: str = Field(default="1m", pattern="^(1m|5m)$")
+    strategy: str = Field(default="momentum_breakout", pattern="^(sma_cross|momentum_breakout)$")
+    poll_seconds: float = Field(default=settings.simulation_automation_poll_seconds, ge=5, le=3600)
+    notional: Decimal = Field(
+        default=Decimal(str(settings.simulation_automation_default_notional)),
+        gt=0,
+    )
+    max_position_notional: Decimal = Field(
+        default=Decimal(str(settings.simulation_automation_max_position_notional)),
+        gt=0,
+    )
+    short_window: int = Field(default=5, ge=2, le=200)
+    long_window: int = Field(default=20, ge=3, le=500)
+    momentum_window: int = Field(default=20, ge=3, le=500)
+    breakout_bps: Decimal = Field(default=Decimal("10"), ge=0, le=1000)
+    exit_window: int = Field(default=10, ge=2, le=200)
+
+
 @router.get("/config")
 async def simulation_config() -> dict[str, object]:
     return {
@@ -74,6 +96,12 @@ async def simulation_config() -> dict[str, object]:
             "enabled": True,
             "strategies": list(BACKTEST_STRATEGIES.keys()),
             "data_source": "postgres_closed_candles",
+        },
+        "automation": {
+            "enabled": True,
+            "default_notional": settings.simulation_automation_default_notional,
+            "max_position_notional": settings.simulation_automation_max_position_notional,
+            "poll_seconds": settings.simulation_automation_poll_seconds,
         },
     }
 
@@ -130,6 +158,66 @@ async def latest_book(
     return await request.app.state.db.fetch_latest_book_top(
         _validate_symbol(symbol),
         exchange=(exchange or settings.simulation_default_exchange).lower(),
+    )
+
+
+@router.get("/automation")
+async def automation_status(request: Request) -> dict[str, object]:
+    return jsonable_encoder(request.app.state.automation_worker.status())
+
+
+@router.post("/automation/start")
+async def start_automation(request: Request, payload: AutomationRequest) -> dict[str, object]:
+    symbol = _validate_symbol(payload.symbol)
+    try:
+        status = await request.app.state.automation_worker.start_strategy(
+            AutomationConfig(
+                portfolio_id=payload.portfolio_id,
+                exchange=settings.simulation_default_exchange,
+                symbol=symbol,
+                interval=payload.interval,
+                strategy=payload.strategy,
+                enabled=True,
+                poll_seconds=payload.poll_seconds,
+                notional=payload.notional,
+                max_position_notional=payload.max_position_notional,
+                short_window=payload.short_window,
+                long_window=payload.long_window,
+                momentum_window=payload.momentum_window,
+                breakout_bps=payload.breakout_bps,
+                exit_window=payload.exit_window,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return jsonable_encoder(status)
+
+
+@router.post("/automation/stop")
+async def stop_automation(request: Request) -> dict[str, object]:
+    return jsonable_encoder(await request.app.state.automation_worker.stop_strategy())
+
+
+@router.post("/automation/evaluate")
+async def evaluate_automation(request: Request) -> dict[str, object]:
+    signal = await request.app.state.automation_worker.evaluate_once()
+    return jsonable_encoder(
+        {
+            "status": request.app.state.automation_worker.status(),
+            "signal": signal,
+        }
+    )
+
+
+@router.get("/automation/signals")
+async def automation_signals(
+    request: Request,
+    portfolio_id: str = Query("default", max_length=64),
+    limit: int = Query(50, ge=1, le=200),
+) -> list[dict[str, object]]:
+    return await request.app.state.db.fetch_strategy_signals(
+        portfolio_id=portfolio_id,
+        limit=limit,
     )
 
 

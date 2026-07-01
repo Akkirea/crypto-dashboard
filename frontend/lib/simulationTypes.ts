@@ -204,3 +204,42 @@ export type BacktestRunSummary = {
   trade_count: number;
   created_at: string;
 };
+
+export type AutomationStatus = {
+  read_only: boolean;
+  live_trading_enabled: false;
+  automated_simulation_enabled: boolean;
+  config: {
+    portfolio_id: string;
+    exchange: string;
+    symbol: string;
+    interval: string;
+    strategy: BacktestStrategy;
+    enabled: boolean;
+    poll_seconds: number;
+    notional: string | number;
+    max_position_notional: string | number;
+    short_window: number;
+    long_window: number;
+    momentum_window: number;
+    breakout_bps: string | number;
+    exit_window: number;
+  };
+  last_signal: AutomationSignal | null;
+  last_error: string | null;
+};
+
+export type AutomationSignal = {
+  id: number;
+  portfolio_id: string;
+  exchange: string;
+  symbol: string;
+  strategy: BacktestStrategy;
+  signal: "buy" | "sell" | "hold";
+  status: "executed" | "rejected" | "skipped" | "observed";
+  reason: string | null;
+  candle_time: string | null;
+  order_id: number | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+};

@@ -264,6 +264,27 @@ CREATE TABLE IF NOT EXISTS simulation_backtest_trades (
 CREATE INDEX IF NOT EXISTS idx_simulation_backtest_trades_run_time
 ON simulation_backtest_trades(run_id, trade_time);
 
+CREATE TABLE IF NOT EXISTS simulation_strategy_signals (
+  id BIGSERIAL PRIMARY KEY,
+  portfolio_id TEXT NOT NULL,
+  exchange TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  strategy TEXT NOT NULL,
+  signal TEXT NOT NULL,
+  status TEXT NOT NULL,
+  reason TEXT,
+  candle_time TIMESTAMPTZ,
+  order_id BIGINT REFERENCES simulation_orders(id),
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_simulation_strategy_signals_time
+ON simulation_strategy_signals(created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_simulation_strategy_signals_symbol_time
+ON simulation_strategy_signals(symbol, created_at DESC);
+
 INSERT INTO simulation_portfolios(id, cash_balance, initial_cash)
 VALUES ('default', 100000, 100000)
 ON CONFLICT (id) DO NOTHING;

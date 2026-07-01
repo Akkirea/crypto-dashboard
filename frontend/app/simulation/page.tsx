@@ -15,6 +15,8 @@ import {
 import { backendHttpUrl } from "@/lib/backendConfig";
 import { fmtPrice, toNumber } from "@/lib/format";
 import {
+  AutomationSignal,
+  AutomationStatus,
   BacktestResult,
   BacktestRunSummary,
   BacktestStrategy,
@@ -40,6 +42,8 @@ export default function SimulationPage() {
   const [quantity, setQuantity] = useState("0.001");
   const [backtest, setBacktest] = useState<BacktestResult | null>(null);
   const [backtestRuns, setBacktestRuns] = useState<BacktestRunSummary[]>([]);
+  const [automation, setAutomation] = useState<AutomationStatus | null>(null);
+  const [automationSignals, setAutomationSignals] = useState<AutomationSignal[]>([]);
   const [backtestStrategy, setBacktestStrategy] = useState<BacktestStrategy>("sma_cross");
   const [shortWindow, setShortWindow] = useState("5");
   const [longWindow, setLongWindow] = useState("20");
@@ -49,6 +53,7 @@ export default function SimulationPage() {
   const [backtestLimit, setBacktestLimit] = useState("500");
   const [submitting, setSubmitting] = useState(false);
   const [backtesting, setBacktesting] = useState(false);
+  const [automationSubmitting, setAutomationSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -63,6 +68,7 @@ export default function SimulationPage() {
           setConfig(data);
           setSymbol(data.symbols[0] ?? "BTCUSDT");
           void loadBacktestRuns();
+          void loadAutomation();
         }
       } catch (caught) {
         if (!closed) setError(caught instanceof Error ? caught.message : "simulation config unavailable");
@@ -131,6 +137,22 @@ export default function SimulationPage() {
       window.clearInterval(interval);
     };
   }, [symbol]);
+
+  useEffect(() => {
+    let closed = false;
+
+    async function pollAutomation() {
+      if (closed) return;
+      await loadAutomation();
+    }
+
+    pollAutomation();
+    const interval = window.setInterval(pollAutomation, 5000);
+    return () => {
+      closed = true;
+      window.clearInterval(interval);
+    };
+  }, []);
 
   const selectedBook = snapshot?.books[symbol];
   const latestCandle = candles.at(-1);
@@ -239,6 +261,89 @@ export default function SimulationPage() {
       setError(caught instanceof Error ? caught.message : "backtest run unavailable");
     } finally {
       setBacktesting(false);
+    }
+  }
+
+  async function loadAutomation() {
+    try {
+      const httpUrl = backendHttpUrl();
+      const [statusResponse, signalsResponse] = await Promise.all([
+        fetch(`${httpUrl}/api/simulation/automation`, { cache: "no-store" }),
+        fetch(`${httpUrl}/api/simulation/automation/signals?limit=20`, { cache: "no-store" })
+      ]);
+      if (statusResponse.ok) setAutomation((await statusResponse.json()) as AutomationStatus);
+      if (signalsResponse.ok) setAutomationSignals((await signalsResponse.json()) as AutomationSignal[]);
+    } catch {
+      // Market data polling already surfaces broader API failures.
+    }
+  }
+
+  async function startAutomation() {
+    setAutomationSubmitting(true);
+    try {
+      const response = await fetch(`${backendHttpUrl()}/api/simulation/automation/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol,
+          interval: "1m",
+          strategy: backtestStrategy,
+          poll_seconds: 15,
+          notional: 1000,
+          max_position_notional: 5000,
+          short_window: Number(shortWindow),
+          long_window: Number(longWindow),
+          momentum_window: Number(momentumWindow),
+          breakout_bps: Number(breakoutBps),
+          exit_window: Number(exitWindow)
+        })
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.detail ?? `HTTP ${response.status}`);
+      }
+      setAutomation((await response.json()) as AutomationStatus);
+      setError(null);
+      await loadAutomation();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "automation start failed");
+    } finally {
+      setAutomationSubmitting(false);
+    }
+  }
+
+  async function stopAutomation() {
+    setAutomationSubmitting(true);
+    try {
+      const response = await fetch(`${backendHttpUrl()}/api/simulation/automation/stop`, {
+        method: "POST"
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      setAutomation((await response.json()) as AutomationStatus);
+      setError(null);
+      await loadAutomation();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "automation stop failed");
+    } finally {
+      setAutomationSubmitting(false);
+    }
+  }
+
+  async function evaluateAutomation() {
+    setAutomationSubmitting(true);
+    try {
+      const response = await fetch(`${backendHttpUrl()}/api/simulation/automation/evaluate`, {
+        method: "POST"
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = (await response.json()) as { status: AutomationStatus };
+      setAutomation(data.status);
+      setError(null);
+      await loadAutomation();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "automation evaluate failed");
+    } finally {
+      setAutomationSubmitting(false);
     }
   }
 
@@ -412,6 +517,15 @@ export default function SimulationPage() {
             <PaperFills fills={fills} />
           </section>
 
+          <AutomationPanel
+            status={automation}
+            signals={automationSignals}
+            running={automationSubmitting}
+            onStart={startAutomation}
+            onStop={stopAutomation}
+            onEvaluate={evaluateAutomation}
+          />
+
           <BacktestPanel
             symbol={symbol}
             strategy={backtestStrategy}
@@ -514,6 +628,97 @@ function PaperFills({ fills }: { fills: SimulationFill[] }) {
       ) : (
         <div className="py-4 text-sm text-muted">No simulated fills.</div>
       )}
+    </section>
+  );
+}
+
+function AutomationPanel({
+  status,
+  signals,
+  running,
+  onStart,
+  onStop,
+  onEvaluate
+}: {
+  status: AutomationStatus | null;
+  signals: AutomationSignal[];
+  running: boolean;
+  onStart: () => void;
+  onStop: () => void;
+  onEvaluate: () => void;
+}) {
+  const enabled = status?.automated_simulation_enabled ?? false;
+  const config = status?.config;
+
+  return (
+    <section className="mt-5 rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className={enabled ? "h-4 w-4 text-buy" : "h-4 w-4 text-muted"} aria-hidden />
+          <div>
+            <h2 className="text-sm font-semibold text-ink">Automated Paper Strategy</h2>
+            <p className="mt-1 text-xs text-muted">
+              {enabled ? "Running simulated strategy orders" : "Stopped"} · no exchange keys · no real orders
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={onEvaluate}
+            disabled={running || !enabled}
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-3 text-sm text-muted hover:text-white disabled:opacity-50"
+          >
+            Evaluate Once
+          </button>
+          <button
+            type="button"
+            onClick={enabled ? onStop : onStart}
+            disabled={running}
+            className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg border px-4 text-sm font-medium disabled:opacity-50 ${
+              enabled
+                ? "border-sell/40 bg-sell/15 text-white hover:bg-sell/20"
+                : "border-buy/40 bg-buy/15 text-white hover:bg-buy/20"
+            }`}
+          >
+            <PlaySquare className="h-4 w-4" aria-hidden />
+            {enabled ? "Stop Automation" : "Start Automation"}
+          </button>
+        </div>
+      </div>
+
+      <section className="mb-4 grid gap-3 md:grid-cols-5">
+        <Metric label="Status" value={enabled ? "Running" : "Stopped"} detail={status?.last_error ?? "Read-only simulation"} />
+        <Metric label="Strategy" value={config?.strategy ?? "—"} detail={config?.symbol ?? "—"} />
+        <Metric label="Notional" value={`$${fmtPrice(toNumber(config?.notional))}`} detail={`Cap $${fmtPrice(toNumber(config?.max_position_notional))}`} />
+        <Metric label="Poll" value={`${fmtPrice(toNumber(config?.poll_seconds))}s`} detail={config?.interval ?? "—"} />
+        <Metric label="Last Signal" value={status?.last_signal?.signal ?? "—"} detail={status?.last_signal?.status ?? "No signals"} />
+      </section>
+
+      <section className="overflow-hidden rounded-lg border border-white/[0.08]">
+        <div className="grid grid-cols-[80px_1fr_1fr_1fr_1fr] border-b border-line bg-white/[0.03] px-3 py-2 text-xs text-muted">
+          <span>Signal</span>
+          <span>Strategy</span>
+          <span className="text-right">Status</span>
+          <span className="text-right">Reason</span>
+          <span className="text-right">Time</span>
+        </div>
+        {signals.map((signal) => (
+          <div
+            key={signal.id}
+            className="grid grid-cols-[80px_1fr_1fr_1fr_1fr] border-b border-white/[0.06] px-3 py-2 text-sm tabular-nums"
+          >
+            <span className={signal.signal === "buy" ? "text-buy" : signal.signal === "sell" ? "text-sell" : "text-muted"}>
+              {signal.signal}
+            </span>
+            <span className="font-medium text-white">{signal.strategy}</span>
+            <span className="text-right text-muted">{signal.status}</span>
+            <span className="truncate text-right text-muted">{signal.reason ?? "—"}</span>
+            <span className="text-right text-muted">{new Date(signal.created_at).toLocaleTimeString()}</span>
+          </div>
+        ))}
+        {!signals.length ? <div className="px-3 py-4 text-sm text-muted">No automated signals yet.</div> : null}
+      </section>
     </section>
   );
 }

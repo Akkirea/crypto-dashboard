@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     simulation_latency_ms: int = 250
     simulation_initial_cash: float = 100000.0
     simulation_allow_short: bool = False
+    simulation_automation_poll_seconds: float = 15.0
+    simulation_automation_default_notional: float = 1000.0
+    simulation_automation_max_position_notional: float = 5000.0
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     retention_enabled: bool = True
     retention_initial_delay_seconds: int = 60

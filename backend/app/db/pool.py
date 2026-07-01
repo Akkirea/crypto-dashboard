@@ -363,6 +363,27 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_simulation_backtest_trades_run_time
                 ON simulation_backtest_trades(run_id, trade_time);
 
+                CREATE TABLE IF NOT EXISTS simulation_strategy_signals (
+                  id BIGSERIAL PRIMARY KEY,
+                  portfolio_id TEXT NOT NULL,
+                  exchange TEXT NOT NULL,
+                  symbol TEXT NOT NULL,
+                  strategy TEXT NOT NULL,
+                  signal TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  reason TEXT,
+                  candle_time TIMESTAMPTZ,
+                  order_id BIGINT REFERENCES simulation_orders(id),
+                  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_simulation_strategy_signals_time
+                ON simulation_strategy_signals(created_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_simulation_strategy_signals_symbol_time
+                ON simulation_strategy_signals(symbol, created_at DESC);
+
                 INSERT INTO symbols(symbol, base_asset, quote_asset)
                 VALUES
                   ('BTCUSDT', 'BTC', 'USDT'),
@@ -641,7 +662,8 @@ class Database:
               'simulation_positions',
               'simulation_equity_snapshots',
               'simulation_backtest_runs',
-              'simulation_backtest_trades'
+              'simulation_backtest_trades',
+              'simulation_strategy_signals'
             )
             ORDER BY pg_total_relation_size(relid) DESC
             """
@@ -943,6 +965,67 @@ class Database:
         )
         return dict(row) if row else None
 
+    async def save_strategy_signal(
+        self,
+        *,
+        portfolio_id: str,
+        exchange: str,
+        symbol: str,
+        strategy: str,
+        signal: str,
+        status: str,
+        reason: Optional[str] = None,
+        candle_time: Optional[datetime] = None,
+        order_id: Optional[int] = None,
+        payload: Optional[dict[str, Any]] = None,
+    ) -> Optional[dict[str, Any]]:
+        if not self.pool:
+            return None
+        row = await self.pool.fetchrow(
+            """
+            INSERT INTO simulation_strategy_signals(
+              portfolio_id, exchange, symbol, strategy, signal, status,
+              reason, candle_time, order_id, payload
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+            RETURNING id, portfolio_id, exchange, symbol, strategy, signal,
+                      status, reason, candle_time, order_id, payload, created_at
+            """,
+            portfolio_id,
+            exchange.lower(),
+            symbol.upper(),
+            strategy,
+            signal,
+            status,
+            reason,
+            candle_time,
+            order_id,
+            json.dumps(payload or {}, default=_json_default),
+        )
+        return _decode_json_fields(dict(row), "payload")
+
+    async def fetch_strategy_signals(
+        self,
+        *,
+        portfolio_id: str = "default",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        if not self.pool:
+            return []
+        rows = await self.pool.fetch(
+            """
+            SELECT id, portfolio_id, exchange, symbol, strategy, signal,
+                   status, reason, candle_time, order_id, payload, created_at
+            FROM simulation_strategy_signals
+            WHERE portfolio_id = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+            """,
+            portfolio_id,
+            limit,
+        )
+        return [_decode_json_fields(dict(row), "payload") for row in rows]
+
     async def fetch_simulation_orders(
         self, portfolio_id: str = "default", limit: int = 100
     ) -> list[dict[str, Any]]:
@@ -1214,6 +1297,7 @@ class Database:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("DELETE FROM simulation_equity_snapshots WHERE portfolio_id = $1", portfolio_id)
+                await conn.execute("DELETE FROM simulation_strategy_signals WHERE portfolio_id = $1", portfolio_id)
                 await conn.execute("DELETE FROM simulation_fills WHERE portfolio_id = $1", portfolio_id)
                 await conn.execute("DELETE FROM simulation_orders WHERE portfolio_id = $1", portfolio_id)
                 await conn.execute("DELETE FROM simulation_positions WHERE portfolio_id = $1", portfolio_id)
