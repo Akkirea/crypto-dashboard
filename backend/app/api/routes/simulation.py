@@ -8,7 +8,13 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.simulation.backtest import BacktestConfig, run_sma_cross_backtest
+from app.simulation.backtest import (
+    BACKTEST_STRATEGIES,
+    BacktestConfig,
+    required_lookback,
+    run_backtest as run_backtest_engine,
+    strategy_definitions,
+)
 
 router = APIRouter(prefix="/api/simulation", tags=["simulation"])
 
@@ -30,10 +36,13 @@ class SimulatedMarketOrderRequest(BaseModel):
 class BacktestRequest(BaseModel):
     symbol: str = Field(..., max_length=32)
     interval: str = Field(default="1m", pattern="^(1m|5m)$")
-    strategy: str = Field(default="sma_cross", pattern="^sma_cross$")
+    strategy: str = Field(default="sma_cross", pattern="^(sma_cross|momentum_breakout)$")
     initial_cash: Decimal = Field(default=Decimal("10000"), gt=0)
     short_window: int = Field(default=5, ge=2, le=200)
     long_window: int = Field(default=20, ge=3, le=500)
+    momentum_window: int = Field(default=20, ge=3, le=500)
+    breakout_bps: Decimal = Field(default=Decimal("10"), ge=0, le=1000)
+    exit_window: int = Field(default=10, ge=2, le=200)
     limit: int = Field(default=500, ge=50, le=2000)
     persist: bool = True
 
@@ -63,7 +72,7 @@ async def simulation_config() -> dict[str, object]:
         },
         "backtesting": {
             "enabled": True,
-            "strategies": ["sma_cross"],
+            "strategies": list(BACKTEST_STRATEGIES.keys()),
             "data_source": "postgres_closed_candles",
         },
     }
@@ -128,18 +137,7 @@ async def latest_book(
 async def backtest_strategies() -> dict[str, object]:
     return {
         "read_only": True,
-        "strategies": [
-            {
-                "name": "sma_cross",
-                "label": "SMA Crossover",
-                "description": "Long-only candle backtest that buys when the short SMA crosses above the long SMA and exits on the reverse cross.",
-                "parameters": {
-                    "short_window": {"default": 5, "min": 2, "max": 200},
-                    "long_window": {"default": 20, "min": 3, "max": 500},
-                    "limit": {"default": 500, "min": 50, "max": 2000},
-                },
-            }
-        ],
+        "strategies": strategy_definitions(),
     }
 
 
@@ -167,32 +165,38 @@ async def backtest_run(request: Request, run_id: int) -> dict[str, object]:
 @router.post("/backtests")
 async def run_backtest(request: Request, payload: BacktestRequest) -> dict[str, object]:
     symbol = _validate_symbol(payload.symbol)
-    if payload.short_window >= payload.long_window:
+    if payload.strategy == "sma_cross" and payload.short_window >= payload.long_window:
         raise HTTPException(status_code=422, detail="short_window must be lower than long_window")
+    config = BacktestConfig(
+        symbol=symbol,
+        interval=payload.interval,
+        strategy=payload.strategy,
+        initial_cash=payload.initial_cash,
+        short_window=payload.short_window,
+        long_window=payload.long_window,
+        momentum_window=payload.momentum_window,
+        breakout_bps=payload.breakout_bps,
+        exit_window=payload.exit_window,
+        fee_bps=Decimal(str(settings.simulation_fee_bps)),
+        slippage_bps=Decimal(str(settings.simulation_slippage_bps)),
+    )
+    lookback = required_lookback(config)
     candles = await request.app.state.db.fetch_backtest_candles(
         symbol,
         payload.interval,
         exchange=settings.simulation_default_exchange,
         limit=payload.limit,
     )
-    if len(candles) < payload.long_window:
+    if len(candles) < lookback:
         raise HTTPException(
             status_code=409,
-            detail=f"not enough closed candles for backtest: have {len(candles)}, need {payload.long_window}",
+            detail=f"not enough closed candles for backtest: have {len(candles)}, need {lookback}",
         )
 
-    result = run_sma_cross_backtest(
-        candles,
-        BacktestConfig(
-            symbol=symbol,
-            interval=payload.interval,
-            initial_cash=payload.initial_cash,
-            short_window=payload.short_window,
-            long_window=payload.long_window,
-            fee_bps=Decimal(str(settings.simulation_fee_bps)),
-            slippage_bps=Decimal(str(settings.simulation_slippage_bps)),
-        ),
-    )
+    try:
+        result = run_backtest_engine(candles, config)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if payload.persist:
         saved = await request.app.state.db.save_backtest_run(
             result,

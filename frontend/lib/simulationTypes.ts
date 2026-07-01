@@ -1,3 +1,5 @@
+export type BacktestStrategy = "sma_cross" | "momentum_breakout";
+
 export type SimulationConfig = {
   mode: string;
   read_only: boolean;
@@ -128,12 +130,15 @@ export type BacktestResult = {
   run_id?: number;
   id?: number;
   created_at?: string;
-  strategy: "sma_cross";
+  strategy: BacktestStrategy;
   symbol: string;
   interval: string;
   parameters: {
-    short_window: number;
-    long_window: number;
+    short_window?: number;
+    long_window?: number;
+    momentum_window?: number;
+    breakout_bps?: number;
+    exit_window?: number;
     fee_bps: number;
     slippage_bps: number;
     initial_cash: number;
@@ -155,6 +160,16 @@ export type BacktestResult = {
     trade_count: number;
     closed_trade_count: number;
     win_rate_pct: string | number | null;
+    total_fees?: string | number;
+    total_slippage?: string | number;
+    gross_profit?: string | number;
+    gross_loss?: string | number;
+    average_win?: string | number | null;
+    average_loss?: string | number | null;
+    profit_factor?: string | number | null;
+    exposure_pct?: string | number | null;
+    buy_hold_return_pct?: string | number | null;
+    alpha_vs_buy_hold_pct?: string | number | null;
   };
   trades: Array<{
     time: string;
@@ -162,6 +177,7 @@ export type BacktestResult = {
     price: string | number;
     quantity: string | number;
     fee: string | number;
+    slippage?: string | number;
     notional: string | number;
     realized_pnl: string | number;
     reason: string;
@@ -180,7 +196,7 @@ export type BacktestRunSummary = {
   exchange: string;
   symbol: string;
   interval: string;
-  strategy: "sma_cross";
+  strategy: BacktestStrategy;
   status: string;
   parameters: BacktestResult["parameters"];
   sample: BacktestResult["sample"];

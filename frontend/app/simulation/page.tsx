@@ -17,6 +17,7 @@ import { fmtPrice, toNumber } from "@/lib/format";
 import {
   BacktestResult,
   BacktestRunSummary,
+  BacktestStrategy,
   SimulationCandle,
   SimulationConfig,
   SimulationFill,
@@ -39,8 +40,12 @@ export default function SimulationPage() {
   const [quantity, setQuantity] = useState("0.001");
   const [backtest, setBacktest] = useState<BacktestResult | null>(null);
   const [backtestRuns, setBacktestRuns] = useState<BacktestRunSummary[]>([]);
+  const [backtestStrategy, setBacktestStrategy] = useState<BacktestStrategy>("sma_cross");
   const [shortWindow, setShortWindow] = useState("5");
   const [longWindow, setLongWindow] = useState("20");
+  const [momentumWindow, setMomentumWindow] = useState("20");
+  const [breakoutBps, setBreakoutBps] = useState("10");
+  const [exitWindow, setExitWindow] = useState("10");
   const [backtestLimit, setBacktestLimit] = useState("500");
   const [submitting, setSubmitting] = useState(false);
   const [backtesting, setBacktesting] = useState(false);
@@ -188,9 +193,12 @@ export default function SimulationPage() {
         body: JSON.stringify({
           symbol,
           interval: "1m",
-          strategy: "sma_cross",
+          strategy: backtestStrategy,
           short_window: Number(shortWindow),
           long_window: Number(longWindow),
+          momentum_window: Number(momentumWindow),
+          breakout_bps: Number(breakoutBps),
+          exit_window: Number(exitWindow),
           limit: Number(backtestLimit),
           initial_cash: 10000,
           persist: true
@@ -406,14 +414,22 @@ export default function SimulationPage() {
 
           <BacktestPanel
             symbol={symbol}
+            strategy={backtestStrategy}
             shortWindow={shortWindow}
             longWindow={longWindow}
+            momentumWindow={momentumWindow}
+            breakoutBps={breakoutBps}
+            exitWindow={exitWindow}
             limit={backtestLimit}
             result={backtest}
             runs={backtestRuns}
             running={backtesting}
+            onStrategyChange={setBacktestStrategy}
             onShortWindowChange={setShortWindow}
             onLongWindowChange={setLongWindow}
+            onMomentumWindowChange={setMomentumWindow}
+            onBreakoutBpsChange={setBreakoutBps}
+            onExitWindowChange={setExitWindow}
             onLimitChange={setBacktestLimit}
             onRun={runBacktest}
             onLoadRun={loadBacktestRun}
@@ -504,27 +520,43 @@ function PaperFills({ fills }: { fills: SimulationFill[] }) {
 
 function BacktestPanel({
   symbol,
+  strategy,
   shortWindow,
   longWindow,
+  momentumWindow,
+  breakoutBps,
+  exitWindow,
   limit,
   result,
   runs,
   running,
+  onStrategyChange,
   onShortWindowChange,
   onLongWindowChange,
+  onMomentumWindowChange,
+  onBreakoutBpsChange,
+  onExitWindowChange,
   onLimitChange,
   onRun,
   onLoadRun
 }: {
   symbol: string;
+  strategy: BacktestStrategy;
   shortWindow: string;
   longWindow: string;
+  momentumWindow: string;
+  breakoutBps: string;
+  exitWindow: string;
   limit: string;
   result: BacktestResult | null;
   runs: BacktestRunSummary[];
   running: boolean;
+  onStrategyChange: (value: BacktestStrategy) => void;
   onShortWindowChange: (value: string) => void;
   onLongWindowChange: (value: string) => void;
+  onMomentumWindowChange: (value: string) => void;
+  onBreakoutBpsChange: (value: string) => void;
+  onExitWindowChange: (value: string) => void;
   onLimitChange: (value: string) => void;
   onRun: () => void;
   onLoadRun: (runId: number) => void;
@@ -539,7 +571,7 @@ function BacktestPanel({
           <LineChart className="h-4 w-4 text-gold" aria-hidden />
           <div>
             <h2 className="text-sm font-semibold text-ink">Historical Backtest</h2>
-            <p className="mt-1 text-xs text-muted">SMA crossover on persisted closed candles for {symbol}</p>
+            <p className="mt-1 text-xs text-muted">Strategy research on persisted closed candles for {symbol}</p>
           </div>
         </div>
         <button
@@ -553,9 +585,39 @@ function BacktestPanel({
         </button>
       </div>
 
-      <div className="mb-4 grid gap-3 md:grid-cols-3">
-        <BacktestInput label="Short SMA" value={shortWindow} onChange={onShortWindowChange} />
-        <BacktestInput label="Long SMA" value={longWindow} onChange={onLongWindowChange} />
+      <div className="mb-4 flex flex-wrap gap-2">
+        {([
+          ["sma_cross", "SMA Crossover"],
+          ["momentum_breakout", "Momentum Breakout"]
+        ] as Array<[BacktestStrategy, string]>).map(([item, label]) => (
+          <button
+            key={item}
+            type="button"
+            onClick={() => onStrategyChange(item)}
+            className={`h-9 rounded-lg border px-3 text-sm ${
+              strategy === item
+                ? "border-gold/50 bg-gold/20 text-white"
+                : "border-white/10 bg-white/[0.05] text-muted hover:text-white"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className="mb-4 grid gap-3 md:grid-cols-4">
+        {strategy === "sma_cross" ? (
+          <>
+            <BacktestInput label="Short SMA" value={shortWindow} onChange={onShortWindowChange} />
+            <BacktestInput label="Long SMA" value={longWindow} onChange={onLongWindowChange} />
+          </>
+        ) : (
+          <>
+            <BacktestInput label="Momentum Window" value={momentumWindow} onChange={onMomentumWindowChange} />
+            <BacktestInput label="Breakout bps" value={breakoutBps} onChange={onBreakoutBpsChange} />
+            <BacktestInput label="Exit Window" value={exitWindow} onChange={onExitWindowChange} />
+          </>
+        )}
         <BacktestInput label="Candle Limit" value={limit} onChange={onLimitChange} />
       </div>
 
@@ -584,6 +646,34 @@ function BacktestPanel({
           label="Win Rate"
           value={`${fmtPrice(toNumber(result?.summary.win_rate_pct))}%`}
           detail="Closed trades"
+        />
+      </section>
+
+      <section className="mt-3 grid gap-3 md:grid-cols-5">
+        <Metric
+          label="Fees"
+          value={`$${fmtPrice(toNumber(result?.summary.total_fees))}`}
+          detail={`Slippage $${fmtPrice(toNumber(result?.summary.total_slippage))}`}
+        />
+        <Metric
+          label="Profit Factor"
+          value={fmtPrice(toNumber(result?.summary.profit_factor))}
+          detail={`Gross +$${fmtPrice(toNumber(result?.summary.gross_profit))}`}
+        />
+        <Metric
+          label="Avg Win/Loss"
+          value={`${fmtPrice(toNumber(result?.summary.average_win))} / ${fmtPrice(toNumber(result?.summary.average_loss))}`}
+          detail="Closed trades"
+        />
+        <Metric
+          label="Exposure"
+          value={`${fmtPrice(toNumber(result?.summary.exposure_pct))}%`}
+          detail="Time in market"
+        />
+        <Metric
+          label="Alpha"
+          value={`${fmtPrice(toNumber(result?.summary.alpha_vs_buy_hold_pct))}%`}
+          detail={`B&H ${fmtPrice(toNumber(result?.summary.buy_hold_return_pct))}%`}
         />
       </section>
 
@@ -626,9 +716,10 @@ function BacktestPanel({
       </section>
 
       <section className="mt-4 overflow-hidden rounded-lg border border-white/[0.08]">
-        <div className="grid grid-cols-[70px_1fr_1fr_1fr_1fr] border-b border-line bg-white/[0.03] px-3 py-2 text-xs text-muted">
+        <div className="grid grid-cols-[70px_1fr_1fr_1fr_1fr_1fr] border-b border-line bg-white/[0.03] px-3 py-2 text-xs text-muted">
           <span>Run</span>
           <span>Symbol</span>
+          <span>Strategy</span>
           <span className="text-right">Return</span>
           <span className="text-right">Trades</span>
           <span className="text-right">Created</span>
@@ -638,10 +729,11 @@ function BacktestPanel({
             key={run.id}
             type="button"
             onClick={() => onLoadRun(run.id)}
-            className="grid w-full grid-cols-[70px_1fr_1fr_1fr_1fr] border-b border-white/[0.06] px-3 py-2 text-left text-sm tabular-nums hover:bg-white/[0.04]"
+            className="grid w-full grid-cols-[70px_1fr_1fr_1fr_1fr_1fr] border-b border-white/[0.06] px-3 py-2 text-left text-sm tabular-nums hover:bg-white/[0.04]"
           >
             <span className="text-gold">#{run.id}</span>
             <span className="font-medium text-white">{run.symbol}</span>
+            <span className="text-muted">{run.strategy}</span>
             <span className="text-right">{fmtPrice(toNumber(run.summary.total_return_pct))}%</span>
             <span className="text-right text-muted">{run.trade_count}</span>
             <span className="text-right text-muted">{new Date(run.created_at).toLocaleTimeString()}</span>
