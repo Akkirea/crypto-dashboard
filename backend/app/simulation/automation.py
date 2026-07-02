@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -20,7 +20,7 @@ class AutomationConfig:
     portfolio_id: str = "default"
     exchange: str = "binance"
     symbol: str = "BTCUSDT"
-    interval: str = "1m"
+    interval: str = "5m"
     strategy: str = "momentum_breakout"
     enabled: bool = False
     poll_seconds: float = settings.simulation_automation_poll_seconds
@@ -31,6 +31,13 @@ class AutomationConfig:
     momentum_window: int = 20
     breakout_bps: Decimal = Decimal("10")
     exit_window: int = 10
+    stop_loss_bps: Decimal = Decimal("50")
+    trailing_stop_bps: Decimal = Decimal("35")
+    take_profit_bps: Decimal = Decimal("100")
+    min_holding_minutes: Decimal = Decimal("3")
+    max_holding_minutes: Decimal = Decimal("90")
+    cooldown_minutes: Decimal = Decimal("5")
+    max_spread_bps: Decimal = Decimal("10")
 
 
 class AutomatedSimulationWorker:
@@ -43,6 +50,7 @@ class AutomatedSimulationWorker:
         self._last_candle_key: Optional[str] = None
         self._last_signal: Optional[dict[str, Any]] = None
         self._last_error: Optional[str] = None
+        self._position_state: dict[str, dict[str, Any]] = {}
 
     async def run(self) -> None:
         while not self._stop.is_set():
@@ -107,6 +115,13 @@ class AutomatedSimulationWorker:
         payload["notional"] = str(self.config.notional)
         payload["max_position_notional"] = str(self.config.max_position_notional)
         payload["breakout_bps"] = str(self.config.breakout_bps)
+        payload["stop_loss_bps"] = str(self.config.stop_loss_bps)
+        payload["trailing_stop_bps"] = str(self.config.trailing_stop_bps)
+        payload["take_profit_bps"] = str(self.config.take_profit_bps)
+        payload["min_holding_minutes"] = str(self.config.min_holding_minutes)
+        payload["max_holding_minutes"] = str(self.config.max_holding_minutes)
+        payload["cooldown_minutes"] = str(self.config.cooldown_minutes)
+        payload["max_spread_bps"] = str(self.config.max_spread_bps)
         return {
             "read_only": True,
             "live_trading_enabled": False,
@@ -164,7 +179,16 @@ class AutomatedSimulationWorker:
             None,
         )
         position_qty = Decimal(str(position["quantity"])) if position else Decimal("0")
-        signal, reason, metrics = self._compute_signal(config, candles, position_qty)
+        raw_signal, raw_reason, metrics = self._compute_signal(config, candles, position_qty)
+        book = await self._book(config.symbol, config.exchange)
+        signal, reason, metrics = await self._apply_position_manager(
+            config=config,
+            raw_signal=raw_signal,
+            raw_reason=raw_reason,
+            metrics=metrics,
+            position=position,
+            book=book,
+        )
         if signal == "hold":
             return await self._record_signal(
                 config,
@@ -175,7 +199,6 @@ class AutomatedSimulationWorker:
                 metrics,
             )
 
-        book = await self._book(config.symbol, config.exchange)
         if book is None:
             return await self._record_signal(
                 config,
@@ -232,6 +255,12 @@ class AutomatedSimulationWorker:
             },
         )
         status = "executed" if order.get("status") == "filled" else "rejected"
+        if status == "executed":
+            self._update_position_state_after_fill(
+                config=config,
+                side=side,
+                mark_price=(bid_price + ask_price) / Decimal("2"),
+            )
         saved_signal = await self._record_signal(
             config,
             signal,
@@ -242,6 +271,30 @@ class AutomatedSimulationWorker:
             order_id=order.get("id"),
         )
         return saved_signal
+
+    def _update_position_state_after_fill(
+        self,
+        *,
+        config: AutomationConfig,
+        side: str,
+        mark_price: Decimal,
+    ) -> None:
+        state_key = f"{config.portfolio_id}:{config.exchange}:{config.symbol}"
+        state = self._position_state.setdefault(
+            state_key,
+            {"entry_time": None, "highest_price": None, "last_trade_time": None},
+        )
+        now = datetime.now(timezone.utc)
+        if side == "buy":
+            state["entry_time"] = state.get("entry_time") or now
+            state["highest_price"] = max(
+                Decimal(str(state.get("highest_price") or mark_price)),
+                mark_price,
+            )
+        else:
+            state["entry_time"] = None
+            state["highest_price"] = None
+            state["last_trade_time"] = now
 
     def _compute_signal(
         self,
@@ -277,6 +330,215 @@ class AutomatedSimulationWorker:
         if position_qty > 0 and close < exit_average:
             return "sell", "close_fell_below_exit_average", metrics
         return "hold", "no_momentum_breakout_action", metrics
+
+    async def _apply_position_manager(
+        self,
+        *,
+        config: AutomationConfig,
+        raw_signal: str,
+        raw_reason: str,
+        metrics: dict[str, Any],
+        position: Optional[dict[str, Any]],
+        book: Optional[dict[str, Any]],
+    ) -> tuple[str, str, dict[str, Any]]:
+        position_qty = Decimal(str(position["quantity"])) if position else Decimal("0")
+        now = datetime.now(timezone.utc)
+        mark_price = self._mark_price(position, book, metrics)
+        spread_bps = self._spread_bps(book)
+        state_key = f"{config.portfolio_id}:{config.exchange}:{config.symbol}"
+        state = await self._sync_position_state(config, state_key, position, mark_price)
+
+        manager = {
+            "raw_signal": raw_signal,
+            "raw_reason": raw_reason,
+            "mark_price": str(mark_price) if mark_price is not None else None,
+            "spread_bps": str(spread_bps) if spread_bps is not None else None,
+            "position_qty": str(position_qty),
+            "decision": "hold",
+            "reason": raw_reason,
+        }
+
+        if spread_bps is not None and spread_bps > config.max_spread_bps:
+            manager["market_quality"] = "spread_too_wide"
+            metrics["position_manager"] = manager
+            if position_qty > 0:
+                return "sell", "spread_widened_beyond_limit", metrics
+            return "hold", "spread_too_wide_for_entry", metrics
+
+        if position_qty <= 0:
+            state["entry_time"] = None
+            state["highest_price"] = None
+            if raw_signal != "buy":
+                metrics["position_manager"] = manager
+                return "hold", raw_reason, metrics
+            cooldown_remaining = self._cooldown_remaining_minutes(config, state, now)
+            if cooldown_remaining > Decimal("0"):
+                manager["cooldown_remaining_minutes"] = str(cooldown_remaining)
+                metrics["position_manager"] = manager
+                return "hold", "trade_cooldown_active", metrics
+            manager["decision"] = "buy"
+            metrics["position_manager"] = manager
+            return "buy", raw_reason, metrics
+
+        if mark_price is None:
+            metrics["position_manager"] = manager
+            return "hold", "position_manager_missing_mark_price", metrics
+
+        avg_entry = Decimal(str(position["avg_entry_price"]))
+        state["highest_price"] = max(Decimal(str(state.get("highest_price") or mark_price)), mark_price)
+        entry_time = state.get("entry_time")
+        holding_minutes = _elapsed_minutes(entry_time, now) if isinstance(entry_time, datetime) else Decimal("0")
+        pnl_bps = ((mark_price - avg_entry) / avg_entry) * Decimal("10000") if avg_entry > 0 else Decimal("0")
+        trailing_stop_price = Decimal(str(state["highest_price"])) * (
+            Decimal("1") - config.trailing_stop_bps / Decimal("10000")
+        )
+        edge_score = self._edge_score(raw_signal, pnl_bps, spread_bps, holding_minutes, config)
+        risk_score = self._risk_score(pnl_bps, spread_bps, holding_minutes, config)
+        manager.update(
+            {
+                "avg_entry_price": str(avg_entry),
+                "unrealized_pnl_bps": str(pnl_bps),
+                "highest_price": str(state["highest_price"]),
+                "trailing_stop_price": str(trailing_stop_price),
+                "holding_minutes": str(holding_minutes),
+                "edge_score": str(edge_score),
+                "risk_score": str(risk_score),
+            }
+        )
+
+        if pnl_bps <= -config.stop_loss_bps:
+            metrics["position_manager"] = {**manager, "decision": "sell", "exit_type": "hard_stop"}
+            return "sell", "stop_loss_triggered", metrics
+        if mark_price <= trailing_stop_price:
+            metrics["position_manager"] = {**manager, "decision": "sell", "exit_type": "trailing_stop"}
+            return "sell", "trailing_stop_triggered", metrics
+        if holding_minutes >= config.max_holding_minutes:
+            metrics["position_manager"] = {**manager, "decision": "sell", "exit_type": "time_stop"}
+            return "sell", "max_holding_time_reached", metrics
+        if config.take_profit_bps > 0 and pnl_bps >= config.take_profit_bps and raw_signal != "buy":
+            metrics["position_manager"] = {**manager, "decision": "sell", "exit_type": "take_profit"}
+            return "sell", "take_profit_reached_after_edge_decay", metrics
+
+        if holding_minutes < config.min_holding_minutes:
+            remaining = config.min_holding_minutes - holding_minutes
+            manager["min_hold_remaining_minutes"] = str(remaining)
+            metrics["position_manager"] = manager
+            return "hold", "minimum_hold_active", metrics
+        if raw_signal == "sell":
+            metrics["position_manager"] = {**manager, "decision": "sell", "exit_type": "strategy_exit"}
+            return "sell", raw_reason, metrics
+
+        manager["decision"] = "hold"
+        manager["reason"] = "edge_still_valid"
+        metrics["position_manager"] = manager
+        return "hold", "edge_still_valid_hold_position", metrics
+
+    async def _sync_position_state(
+        self,
+        config: AutomationConfig,
+        state_key: str,
+        position: Optional[dict[str, Any]],
+        mark_price: Optional[Decimal],
+    ) -> dict[str, Any]:
+        state = self._position_state.setdefault(
+            state_key,
+            {"entry_time": None, "highest_price": mark_price, "last_trade_time": None},
+        )
+        if not position:
+            if state.get("entry_time") is not None:
+                state["last_trade_time"] = datetime.now(timezone.utc)
+            state["entry_time"] = None
+            state["highest_price"] = None
+            return state
+        if state.get("entry_time") is None:
+            fills = await self.db.fetch_simulation_fills(portfolio_id=config.portfolio_id, limit=100)
+            latest_buy = next(
+                (
+                    fill
+                    for fill in fills
+                    if fill["exchange"] == config.exchange
+                    and fill["symbol"] == config.symbol
+                    and fill["side"] == "buy"
+                ),
+                None,
+            )
+            state["entry_time"] = latest_buy["created_at"] if latest_buy else datetime.now(timezone.utc)
+            state["highest_price"] = mark_price
+        return state
+
+    def _mark_price(
+        self,
+        position: Optional[dict[str, Any]],
+        book: Optional[dict[str, Any]],
+        metrics: dict[str, Any],
+    ) -> Optional[Decimal]:
+        if book is not None:
+            bid = Decimal(str(book["bid_price"]))
+            ask = Decimal(str(book["ask_price"]))
+            return (bid + ask) / Decimal("2")
+        if position and position.get("mark_price") is not None:
+            return Decimal(str(position["mark_price"]))
+        if metrics.get("close") is not None:
+            return Decimal(str(metrics["close"]))
+        return None
+
+    def _spread_bps(self, book: Optional[dict[str, Any]]) -> Optional[Decimal]:
+        if book is None:
+            return None
+        bid = Decimal(str(book["bid_price"]))
+        ask = Decimal(str(book["ask_price"]))
+        mid = (bid + ask) / Decimal("2")
+        if mid <= 0:
+            return None
+        return ((ask - bid) / mid) * Decimal("10000")
+
+    def _cooldown_remaining_minutes(
+        self,
+        config: AutomationConfig,
+        state: dict[str, Any],
+        now: datetime,
+    ) -> Decimal:
+        last_trade_time = state.get("last_trade_time")
+        if not isinstance(last_trade_time, datetime):
+            return Decimal("0")
+        elapsed = _elapsed_minutes(last_trade_time, now)
+        return max(Decimal("0"), config.cooldown_minutes - elapsed)
+
+    def _edge_score(
+        self,
+        raw_signal: str,
+        pnl_bps: Decimal,
+        spread_bps: Optional[Decimal],
+        holding_minutes: Decimal,
+        config: AutomationConfig,
+    ) -> Decimal:
+        score = Decimal("0.50")
+        if raw_signal == "buy":
+            score += Decimal("0.25")
+        if raw_signal == "sell":
+            score -= Decimal("0.35")
+        if pnl_bps > 0:
+            score += min(Decimal("0.15"), pnl_bps / Decimal("1000"))
+        if spread_bps is not None:
+            score -= min(Decimal("0.20"), spread_bps / max(config.max_spread_bps, Decimal("1")) * Decimal("0.10"))
+        if holding_minutes >= config.max_holding_minutes * Decimal("0.75"):
+            score -= Decimal("0.10")
+        return max(Decimal("0"), min(Decimal("1"), score))
+
+    def _risk_score(
+        self,
+        pnl_bps: Decimal,
+        spread_bps: Optional[Decimal],
+        holding_minutes: Decimal,
+        config: AutomationConfig,
+    ) -> Decimal:
+        score = Decimal("0")
+        if pnl_bps < 0:
+            score += min(Decimal("0.45"), abs(pnl_bps) / max(config.stop_loss_bps, Decimal("1")) * Decimal("0.45"))
+        if spread_bps is not None:
+            score += min(Decimal("0.25"), spread_bps / max(config.max_spread_bps, Decimal("1")) * Decimal("0.25"))
+        score += min(Decimal("0.30"), holding_minutes / max(config.max_holding_minutes, Decimal("1")) * Decimal("0.30"))
+        return max(Decimal("0"), min(Decimal("1"), score))
 
     async def _book(self, symbol: str, exchange: str) -> Optional[dict[str, Any]]:
         book = self.state.books.get(symbol)
@@ -316,3 +578,11 @@ class AutomatedSimulationWorker:
 
 def _mean(values: list[Decimal]) -> Decimal:
     return sum(values, Decimal("0")) / Decimal(len(values))
+
+
+def _elapsed_minutes(start: datetime, end: datetime) -> Decimal:
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+    return Decimal(str(max(0.0, (end - start).total_seconds()) / 60))

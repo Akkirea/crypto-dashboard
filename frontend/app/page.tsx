@@ -21,15 +21,16 @@ import { PriceTicker } from "@/components/PriceTicker";
 import { TradeTape } from "@/components/TradeTape";
 import { VolumePanel } from "@/components/VolumePanel";
 import { backendWsUrl } from "@/lib/backendConfig";
-import { BookTopEvent, CandleEvent, HealthEvent, MarketMessage, SymbolName, TradeEvent } from "@/lib/types";
+import { BookTopEvent, CandleEvent, CandleInterval, HealthEvent, MarketMessage, SymbolName, TradeEvent } from "@/lib/types";
 
 const SYMBOLS: SymbolName[] = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+const CANDLE_INTERVALS: CandleInterval[] = ["1m", "5m", "15m", "1h"];
 
-type CandlesBySymbol = Partial<Record<SymbolName, Partial<Record<"1m" | "5m", CandleEvent[]>>>>;
+type CandlesBySymbol = Partial<Record<SymbolName, Partial<Record<CandleInterval, CandleEvent[]>>>>;
 
 export default function DashboardPage() {
   const [selectedSymbol, setSelectedSymbol] = useState<SymbolName>("BTCUSDT");
-  const [interval, setInterval] = useState<"1m" | "5m">("1m");
+  const [interval, setInterval] = useState<CandleInterval>("1m");
   const [prices, setPrices] = useState<Partial<Record<SymbolName, number>>>({});
   const [books, setBooks] = useState<Partial<Record<SymbolName, BookTopEvent>>>({});
   const [trades, setTrades] = useState<Partial<Record<SymbolName, TradeEvent[]>>>({});
@@ -62,7 +63,7 @@ export default function DashboardPage() {
           const nextCandles: CandlesBySymbol = {};
           for (const symbol of SYMBOLS) {
             nextCandles[symbol] = {};
-            for (const candleInterval of ["1m", "5m"] as const) {
+            for (const candleInterval of CANDLE_INTERVALS) {
               const candle = message.candles[symbol]?.[candleInterval];
               nextCandles[symbol]![candleInterval] = candle ? [candle] : [];
             }

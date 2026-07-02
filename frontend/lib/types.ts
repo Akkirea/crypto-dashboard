@@ -1,4 +1,5 @@
 export type SymbolName = "BTCUSDT" | "ETHUSDT" | "SOLUSDT";
+export type CandleInterval = "1m" | "5m" | "15m" | "1h";
 
 export type TradeEvent = {
   type: "trade";
@@ -33,7 +34,7 @@ export type CandleEvent = {
   type: "candle";
   exchange: "binance";
   symbol: SymbolName;
-  interval: "1m" | "5m";
+  interval: CandleInterval;
   open_time: number;
   close_time: number;
   open: number;
@@ -64,7 +65,7 @@ export type SnapshotMessage = {
   prices: Partial<Record<SymbolName, number>>;
   books: Partial<Record<SymbolName, BookTopEvent>>;
   trades: Partial<Record<SymbolName, TradeEvent[]>>;
-  candles: Partial<Record<SymbolName, Partial<Record<"1m" | "5m", CandleEvent>>>>;
+  candles: Partial<Record<SymbolName, Partial<Record<CandleInterval, CandleEvent>>>>;
   health: HealthEvent;
 };
 

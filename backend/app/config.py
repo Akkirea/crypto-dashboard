@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     bybit_spot_ws_url: str = "wss://stream.bybit.com/v5/public/spot"
     enable_bybit: bool = False
     symbols: str = "BTCUSDT,ETHUSDT,SOLUSDT"
-    kline_intervals: str = "1m,5m"
+    kline_intervals: str = "1m,5m,15m,1h"
     analytics_interval_seconds: float = 5.0
     spread_widening_alert_ratio: float = 3.0
     volatility_alert_regimes: str = "elevated,extreme"

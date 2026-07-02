@@ -1,4 +1,5 @@
 export type BacktestStrategy = "sma_cross" | "momentum_breakout";
+export type SimulationInterval = "1m" | "5m" | "15m" | "1h";
 
 export type SimulationConfig = {
   mode: string;
@@ -213,7 +214,7 @@ export type AutomationStatus = {
     portfolio_id: string;
     exchange: string;
     symbol: string;
-    interval: string;
+    interval: SimulationInterval;
     strategy: BacktestStrategy;
     enabled: boolean;
     poll_seconds: number;
@@ -224,6 +225,13 @@ export type AutomationStatus = {
     momentum_window: number;
     breakout_bps: string | number;
     exit_window: number;
+    stop_loss_bps: string | number;
+    trailing_stop_bps: string | number;
+    take_profit_bps: string | number;
+    min_holding_minutes: string | number;
+    max_holding_minutes: string | number;
+    cooldown_minutes: string | number;
+    max_spread_bps: string | number;
   };
   last_signal: AutomationSignal | null;
   last_error: string | null;

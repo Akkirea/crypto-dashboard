@@ -2,7 +2,9 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import { createChart, IChartApi, ISeriesApi, Time } from "lightweight-charts";
-import { CandleEvent } from "@/lib/types";
+import { CandleEvent, CandleInterval } from "@/lib/types";
+
+const CANDLE_INTERVALS: CandleInterval[] = ["1m", "5m", "15m", "1h"];
 
 export function CandleChart({
   candles,
@@ -12,8 +14,8 @@ export function CandleChart({
 }: {
   candles: CandleEvent[];
   symbol: string;
-  interval: "1m" | "5m";
-  onIntervalChange: (interval: "1m" | "5m") => void;
+  interval: CandleInterval;
+  onIntervalChange: (interval: CandleInterval) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -88,7 +90,7 @@ export function CandleChart({
           <div className="text-xs text-muted">TradingView lightweight-charts</div>
         </div>
         <div className="inline-flex rounded-md border border-line bg-black/25 p-1">
-          {(["1m", "5m"] as const).map((item) => (
+          {CANDLE_INTERVALS.map((item) => (
             <button
               key={item}
               onClick={() => onIntervalChange(item)}

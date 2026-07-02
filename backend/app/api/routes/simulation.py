@@ -18,6 +18,7 @@ from app.simulation.backtest import (
 from app.simulation.automation import AutomationConfig
 
 router = APIRouter(prefix="/api/simulation", tags=["simulation"])
+INTERVAL_PATTERN = "^(1m|5m|15m|1h)$"
 
 
 def _validate_symbol(symbol: str) -> str:
@@ -36,7 +37,7 @@ class SimulatedMarketOrderRequest(BaseModel):
 
 class BacktestRequest(BaseModel):
     symbol: str = Field(..., max_length=32)
-    interval: str = Field(default="1m", pattern="^(1m|5m)$")
+    interval: str = Field(default="5m", pattern=INTERVAL_PATTERN)
     strategy: str = Field(default="sma_cross", pattern="^(sma_cross|momentum_breakout)$")
     initial_cash: Decimal = Field(default=Decimal("10000"), gt=0)
     short_window: int = Field(default=5, ge=2, le=200)
@@ -51,7 +52,7 @@ class BacktestRequest(BaseModel):
 class AutomationRequest(BaseModel):
     portfolio_id: str = Field(default="default", max_length=64)
     symbol: str = Field(default="BTCUSDT", max_length=32)
-    interval: str = Field(default="1m", pattern="^(1m|5m)$")
+    interval: str = Field(default="5m", pattern=INTERVAL_PATTERN)
     strategy: str = Field(default="momentum_breakout", pattern="^(sma_cross|momentum_breakout)$")
     poll_seconds: float = Field(default=settings.simulation_automation_poll_seconds, ge=5, le=3600)
     notional: Decimal = Field(
@@ -67,6 +68,13 @@ class AutomationRequest(BaseModel):
     momentum_window: int = Field(default=20, ge=3, le=500)
     breakout_bps: Decimal = Field(default=Decimal("10"), ge=0, le=1000)
     exit_window: int = Field(default=10, ge=2, le=200)
+    stop_loss_bps: Decimal = Field(default=Decimal("50"), ge=1, le=5000)
+    trailing_stop_bps: Decimal = Field(default=Decimal("35"), ge=1, le=5000)
+    take_profit_bps: Decimal = Field(default=Decimal("100"), ge=0, le=10000)
+    min_holding_minutes: Decimal = Field(default=Decimal("3"), ge=0, le=1440)
+    max_holding_minutes: Decimal = Field(default=Decimal("90"), ge=1, le=10080)
+    cooldown_minutes: Decimal = Field(default=Decimal("5"), ge=0, le=1440)
+    max_spread_bps: Decimal = Field(default=Decimal("10"), ge=0, le=10000)
 
 
 @router.get("/config")
@@ -137,7 +145,7 @@ async def recent_trades(
 async def recent_candles(
     request: Request,
     symbol: str = Query(..., max_length=32),
-    interval: str = Query("1m", pattern="^(1m|5m)$"),
+    interval: str = Query("1m", pattern=INTERVAL_PATTERN),
     exchange: Optional[str] = Query(None, max_length=32),
     limit: int = Query(200, ge=1, le=1000),
 ) -> list[dict[str, object]]:
@@ -186,6 +194,13 @@ async def start_automation(request: Request, payload: AutomationRequest) -> dict
                 momentum_window=payload.momentum_window,
                 breakout_bps=payload.breakout_bps,
                 exit_window=payload.exit_window,
+                stop_loss_bps=payload.stop_loss_bps,
+                trailing_stop_bps=payload.trailing_stop_bps,
+                take_profit_bps=payload.take_profit_bps,
+                min_holding_minutes=payload.min_holding_minutes,
+                max_holding_minutes=payload.max_holding_minutes,
+                cooldown_minutes=payload.cooldown_minutes,
+                max_spread_bps=payload.max_spread_bps,
             )
         )
     except ValueError as exc:

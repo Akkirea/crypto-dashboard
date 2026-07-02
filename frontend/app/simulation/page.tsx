@@ -23,11 +23,14 @@ import {
   SimulationCandle,
   SimulationConfig,
   SimulationFill,
+  SimulationInterval,
   SimulationOrder,
   SimulationPortfolio,
   SimulationSnapshot,
   SimulationTrade
 } from "@/lib/simulationTypes";
+
+const STRATEGY_INTERVALS: SimulationInterval[] = ["1m", "5m", "15m", "1h"];
 
 export default function SimulationPage() {
   const [config, setConfig] = useState<SimulationConfig | null>(null);
@@ -44,6 +47,7 @@ export default function SimulationPage() {
   const [backtestRuns, setBacktestRuns] = useState<BacktestRunSummary[]>([]);
   const [automation, setAutomation] = useState<AutomationStatus | null>(null);
   const [automationSignals, setAutomationSignals] = useState<AutomationSignal[]>([]);
+  const [strategyInterval, setStrategyInterval] = useState<SimulationInterval>("5m");
   const [backtestStrategy, setBacktestStrategy] = useState<BacktestStrategy>("sma_cross");
   const [shortWindow, setShortWindow] = useState("5");
   const [longWindow, setLongWindow] = useState("20");
@@ -90,7 +94,7 @@ export default function SimulationPage() {
         const [snapshotResponse, candleResponse, tradeResponse, portfolioResponse, orderResponse, fillResponse] =
           await Promise.all([
           fetch(`${httpUrl}/api/simulation/market/snapshot`, { cache: "no-store" }),
-          fetch(`${httpUrl}/api/simulation/market/candles?symbol=${symbol}&interval=1m&limit=12`, {
+          fetch(`${httpUrl}/api/simulation/market/candles?symbol=${symbol}&interval=${strategyInterval}&limit=12`, {
             cache: "no-store"
           }),
           fetch(`${httpUrl}/api/simulation/market/trades?symbol=${symbol}&limit=12`, {
@@ -136,7 +140,7 @@ export default function SimulationPage() {
       closed = true;
       window.clearInterval(interval);
     };
-  }, [symbol]);
+  }, [symbol, strategyInterval]);
 
   useEffect(() => {
     let closed = false;
@@ -214,7 +218,7 @@ export default function SimulationPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           symbol,
-          interval: "1m",
+          interval: strategyInterval,
           strategy: backtestStrategy,
           short_window: Number(shortWindow),
           long_window: Number(longWindow),
@@ -286,16 +290,23 @@ export default function SimulationPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           symbol,
-          interval: "1m",
+          interval: strategyInterval,
           strategy: backtestStrategy,
-          poll_seconds: 15,
-          notional: 1000,
-          max_position_notional: 5000,
+          poll_seconds: 30,
+          notional: 25,
+          max_position_notional: 100,
           short_window: Number(shortWindow),
           long_window: Number(longWindow),
           momentum_window: Number(momentumWindow),
           breakout_bps: Number(breakoutBps),
-          exit_window: Number(exitWindow)
+          exit_window: Number(exitWindow),
+          stop_loss_bps: 50,
+          trailing_stop_bps: 35,
+          take_profit_bps: 100,
+          min_holding_minutes: 3,
+          max_holding_minutes: 90,
+          cooldown_minutes: 5,
+          max_spread_bps: 10
         })
       });
       if (!response.ok) {
@@ -528,6 +539,7 @@ export default function SimulationPage() {
 
           <BacktestPanel
             symbol={symbol}
+            interval={strategyInterval}
             strategy={backtestStrategy}
             shortWindow={shortWindow}
             longWindow={longWindow}
@@ -539,6 +551,7 @@ export default function SimulationPage() {
             runs={backtestRuns}
             running={backtesting}
             onStrategyChange={setBacktestStrategy}
+            onIntervalChange={setStrategyInterval}
             onShortWindowChange={setShortWindow}
             onLongWindowChange={setLongWindow}
             onMomentumWindowChange={setMomentumWindow}
@@ -649,6 +662,9 @@ function AutomationPanel({
 }) {
   const enabled = status?.automated_simulation_enabled ?? false;
   const config = status?.config;
+  const manager = positionManagerPayload(status?.last_signal);
+  const decision = toMetricText(manager?.decision, status?.last_signal?.signal ?? "—");
+  const decisionReason = toMetricText(manager?.reason, status?.last_signal?.reason ?? "No decision yet");
 
   return (
     <section className="mt-5 rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
@@ -695,6 +711,18 @@ function AutomationPanel({
         <Metric label="Last Signal" value={status?.last_signal?.signal ?? "—"} detail={status?.last_signal?.status ?? "No signals"} />
       </section>
 
+      <section className="mb-4 grid gap-3 md:grid-cols-5">
+        <Metric label="Decision" value={decision} detail={decisionReason} />
+        <Metric label="UPnL" value={`${fmtPrice(toMetricNumber(manager?.unrealized_pnl_bps))} bps`} detail={`Risk ${fmtPrice(toMetricNumber(manager?.risk_score))}`} />
+        <Metric label="Edge" value={fmtPrice(toMetricNumber(manager?.edge_score))} detail={`Spread ${fmtPrice(toMetricNumber(manager?.spread_bps))} bps`} />
+        <Metric label="Trail" value={`$${fmtPrice(toMetricNumber(manager?.trailing_stop_price))}`} detail={`Stop ${fmtPrice(toNumber(config?.stop_loss_bps))} bps`} />
+        <Metric
+          label="Pacing"
+          value={`${fmtPrice(toNumber(config?.cooldown_minutes))}m`}
+          detail={`Min ${fmtPrice(toNumber(config?.min_holding_minutes))}m / Max ${fmtPrice(toNumber(config?.max_holding_minutes))}m`}
+        />
+      </section>
+
       <section className="overflow-hidden rounded-lg border border-white/[0.08]">
         <div className="grid grid-cols-[80px_1fr_1fr_1fr_1fr] border-b border-line bg-white/[0.03] px-3 py-2 text-xs text-muted">
           <span>Signal</span>
@@ -723,8 +751,24 @@ function AutomationPanel({
   );
 }
 
+function positionManagerPayload(signal: AutomationSignal | null | undefined): Record<string, unknown> | null {
+  const payload = signal?.payload;
+  const value = payload?.position_manager;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function toMetricNumber(value: unknown) {
+  return typeof value === "string" || typeof value === "number" ? toNumber(value) : null;
+}
+
+function toMetricText(value: unknown, fallback: string) {
+  return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
 function BacktestPanel({
   symbol,
+  interval,
   strategy,
   shortWindow,
   longWindow,
@@ -736,6 +780,7 @@ function BacktestPanel({
   runs,
   running,
   onStrategyChange,
+  onIntervalChange,
   onShortWindowChange,
   onLongWindowChange,
   onMomentumWindowChange,
@@ -746,6 +791,7 @@ function BacktestPanel({
   onLoadRun
 }: {
   symbol: string;
+  interval: SimulationInterval;
   strategy: BacktestStrategy;
   shortWindow: string;
   longWindow: string;
@@ -757,6 +803,7 @@ function BacktestPanel({
   runs: BacktestRunSummary[];
   running: boolean;
   onStrategyChange: (value: BacktestStrategy) => void;
+  onIntervalChange: (value: SimulationInterval) => void;
   onShortWindowChange: (value: string) => void;
   onLongWindowChange: (value: string) => void;
   onMomentumWindowChange: (value: string) => void;
@@ -791,6 +838,20 @@ function BacktestPanel({
       </div>
 
       <div className="mb-4 flex flex-wrap gap-2">
+        {STRATEGY_INTERVALS.map((item) => (
+          <button
+            key={item}
+            type="button"
+            onClick={() => onIntervalChange(item)}
+            className={`h-9 rounded-lg border px-3 text-sm ${
+              interval === item
+                ? "border-accent/50 bg-accent/20 text-white"
+                : "border-white/10 bg-white/[0.05] text-muted hover:text-white"
+            }`}
+          >
+            {item}
+          </button>
+        ))}
         {([
           ["sma_cross", "SMA Crossover"],
           ["momentum_breakout", "Momentum Breakout"]
