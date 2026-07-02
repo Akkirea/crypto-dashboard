@@ -59,6 +59,31 @@ def test_automation_momentum_signal_sells_when_close_breaks_exit_average() -> No
     assert Decimal(metrics["close"]) < Decimal(metrics["exit_average"])
 
 
+def test_automation_momentum_entry_requires_expected_move_above_cost() -> None:
+    worker = AutomatedSimulationWorker(MarketState(["AAAUSDT"]), db=None)  # type: ignore[arg-type]
+    closes = [Decimal("100"), Decimal("100"), Decimal("100"), Decimal("100"), Decimal("100.20")]
+    candles = [_candle(index, close) for index, close in enumerate(closes)]
+    for candle in candles:
+        candle["high"] = candle["close"]
+
+    signal, reason, metrics = worker._compute_signal(
+        AutomationConfig(
+            symbol="AAAUSDT",
+            strategy="momentum_breakout",
+            momentum_window=3,
+            breakout_bps=Decimal("0"),
+            min_expected_move_bps=Decimal("35"),
+            min_volume_ratio=Decimal("0"),
+        ),
+        candles,
+        Decimal("0"),
+    )
+
+    assert signal == "hold"
+    assert reason == "expected_move_below_cost_threshold"
+    assert Decimal(metrics["price_change_bps"]) < Decimal(metrics["required_move_bps"])
+
+
 @pytest.mark.asyncio
 async def test_position_manager_blocks_reentry_during_cooldown() -> None:
     worker = AutomatedSimulationWorker(MarketState(["AAAUSDT"]), db=None)  # type: ignore[arg-type]

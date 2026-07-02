@@ -38,12 +38,12 @@ class SimulatedMarketOrderRequest(BaseModel):
 class BacktestRequest(BaseModel):
     symbol: str = Field(..., max_length=32)
     interval: str = Field(default="5m", pattern=INTERVAL_PATTERN)
-    strategy: str = Field(default="sma_cross", pattern="^(sma_cross|momentum_breakout)$")
+    strategy: str = Field(default="momentum_breakout", pattern="^(sma_cross|momentum_breakout)$")
     initial_cash: Decimal = Field(default=Decimal("10000"), gt=0)
     short_window: int = Field(default=5, ge=2, le=200)
     long_window: int = Field(default=20, ge=3, le=500)
     momentum_window: int = Field(default=20, ge=3, le=500)
-    breakout_bps: Decimal = Field(default=Decimal("10"), ge=0, le=1000)
+    breakout_bps: Decimal = Field(default=Decimal("25"), ge=0, le=1000)
     exit_window: int = Field(default=10, ge=2, le=200)
     limit: int = Field(default=500, ge=50, le=2000)
     persist: bool = True
@@ -66,8 +66,10 @@ class AutomationRequest(BaseModel):
     short_window: int = Field(default=5, ge=2, le=200)
     long_window: int = Field(default=20, ge=3, le=500)
     momentum_window: int = Field(default=20, ge=3, le=500)
-    breakout_bps: Decimal = Field(default=Decimal("10"), ge=0, le=1000)
+    breakout_bps: Decimal = Field(default=Decimal("25"), ge=0, le=1000)
     exit_window: int = Field(default=10, ge=2, le=200)
+    min_expected_move_bps: Decimal = Field(default=Decimal("35"), ge=0, le=10000)
+    min_volume_ratio: Decimal = Field(default=Decimal("1.20"), ge=0, le=100)
     stop_loss_bps: Decimal = Field(default=Decimal("50"), ge=1, le=5000)
     trailing_stop_bps: Decimal = Field(default=Decimal("35"), ge=1, le=5000)
     take_profit_bps: Decimal = Field(default=Decimal("100"), ge=0, le=10000)
@@ -194,6 +196,8 @@ async def start_automation(request: Request, payload: AutomationRequest) -> dict
                 momentum_window=payload.momentum_window,
                 breakout_bps=payload.breakout_bps,
                 exit_window=payload.exit_window,
+                min_expected_move_bps=payload.min_expected_move_bps,
+                min_volume_ratio=payload.min_volume_ratio,
                 stop_loss_bps=payload.stop_loss_bps,
                 trailing_stop_bps=payload.trailing_stop_bps,
                 take_profit_bps=payload.take_profit_bps,
@@ -317,6 +321,17 @@ async def portfolio(
     portfolio_id: str = Query("default", max_length=64),
 ) -> dict[str, object]:
     return await request.app.state.db.fetch_simulation_portfolio(
+        portfolio_id=portfolio_id,
+        marks=request.app.state.market_state.latest_prices,
+    )
+
+
+@router.get("/pnl")
+async def pnl(
+    request: Request,
+    portfolio_id: str = Query("default", max_length=64),
+) -> dict[str, object]:
+    return await request.app.state.db.fetch_simulation_pnl(
         portfolio_id=portfolio_id,
         marks=request.app.state.market_state.latest_prices,
     )

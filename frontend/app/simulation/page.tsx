@@ -25,6 +25,7 @@ import {
   SimulationFill,
   SimulationInterval,
   SimulationOrder,
+  SimulationPnl,
   SimulationPortfolio,
   SimulationSnapshot,
   SimulationTrade
@@ -36,6 +37,7 @@ export default function SimulationPage() {
   const [config, setConfig] = useState<SimulationConfig | null>(null);
   const [snapshot, setSnapshot] = useState<SimulationSnapshot | null>(null);
   const [portfolio, setPortfolio] = useState<SimulationPortfolio | null>(null);
+  const [pnl, setPnl] = useState<SimulationPnl | null>(null);
   const [orders, setOrders] = useState<SimulationOrder[]>([]);
   const [fills, setFills] = useState<SimulationFill[]>([]);
   const [candles, setCandles] = useState<SimulationCandle[]>([]);
@@ -48,7 +50,7 @@ export default function SimulationPage() {
   const [automation, setAutomation] = useState<AutomationStatus | null>(null);
   const [automationSignals, setAutomationSignals] = useState<AutomationSignal[]>([]);
   const [strategyInterval, setStrategyInterval] = useState<SimulationInterval>("5m");
-  const [backtestStrategy, setBacktestStrategy] = useState<BacktestStrategy>("sma_cross");
+  const [backtestStrategy, setBacktestStrategy] = useState<BacktestStrategy>("momentum_breakout");
   const [shortWindow, setShortWindow] = useState("5");
   const [longWindow, setLongWindow] = useState("20");
   const [momentumWindow, setMomentumWindow] = useState("20");
@@ -91,7 +93,7 @@ export default function SimulationPage() {
     async function loadMarketData() {
       try {
         const httpUrl = backendHttpUrl();
-        const [snapshotResponse, candleResponse, tradeResponse, portfolioResponse, orderResponse, fillResponse] =
+        const [snapshotResponse, candleResponse, tradeResponse, portfolioResponse, pnlResponse, orderResponse, fillResponse] =
           await Promise.all([
           fetch(`${httpUrl}/api/simulation/market/snapshot`, { cache: "no-store" }),
           fetch(`${httpUrl}/api/simulation/market/candles?symbol=${symbol}&interval=${strategyInterval}&limit=12`, {
@@ -101,6 +103,7 @@ export default function SimulationPage() {
             cache: "no-store"
           }),
           fetch(`${httpUrl}/api/simulation/portfolio`, { cache: "no-store" }),
+          fetch(`${httpUrl}/api/simulation/pnl`, { cache: "no-store" }),
           fetch(`${httpUrl}/api/simulation/orders?limit=20`, { cache: "no-store" }),
           fetch(`${httpUrl}/api/simulation/fills?limit=20`, { cache: "no-store" })
         ]);
@@ -119,6 +122,10 @@ export default function SimulationPage() {
         if (portfolioResponse.ok) {
           const data = (await portfolioResponse.json()) as SimulationPortfolio;
           if (!closed) setPortfolio(data);
+        }
+        if (pnlResponse.ok) {
+          const data = (await pnlResponse.json()) as SimulationPnl;
+          if (!closed) setPnl(data);
         }
         if (orderResponse.ok) {
           const data = (await orderResponse.json()) as SimulationOrder[];
@@ -300,6 +307,8 @@ export default function SimulationPage() {
           momentum_window: Number(momentumWindow),
           breakout_bps: Number(breakoutBps),
           exit_window: Number(exitWindow),
+          min_expected_move_bps: 35,
+          min_volume_ratio: 1.2,
           stop_loss_bps: 50,
           trailing_stop_bps: 35,
           take_profit_bps: 100,
@@ -393,8 +402,15 @@ export default function SimulationPage() {
           <section className="mb-5 grid gap-3 md:grid-cols-4">
             <Metric label="Mode" value={config?.read_only ? "Read-only" : "—"} detail="No execution keys" />
             <Metric label="Feed" value={snapshot?.health.connected ? "Live" : "Pending"} detail={`${totalMessages.toLocaleString()} messages`} />
-            <Metric label="Equity" value={`$${fmtPrice(toNumber(portfolio?.equity))}`} detail="Simulated" />
-            <Metric label="Cash" value={`$${fmtPrice(toNumber(portfolio?.cash_balance))}`} detail="Available" />
+            <Metric label="Net PnL" value={`$${fmtPrice(toNumber(pnl?.equity_pnl))}`} detail={`${fmtPrice(toNumber(pnl?.equity_return_pct))}% equity`} />
+            <Metric label="Fees" value={`$${fmtPrice(toNumber(pnl?.total_fees))}`} detail={`Gross $${fmtPrice(toNumber(pnl?.gross_realized_pnl))}`} />
+          </section>
+
+          <section className="mb-5 grid gap-3 md:grid-cols-4">
+            <Metric label="Equity" value={`$${fmtPrice(toNumber(pnl?.equity ?? portfolio?.equity))}`} detail={`Cash $${fmtPrice(toNumber(pnl?.cash_balance ?? portfolio?.cash_balance))}`} />
+            <Metric label="Closed Trades" value={`${pnl?.closed_trade_count ?? 0}`} detail={`${pnl?.winning_trade_count ?? 0}W / ${pnl?.losing_trade_count ?? 0}L`} />
+            <Metric label="Win Rate" value={`${fmtPrice(toNumber(pnl?.win_rate_pct))}%`} detail={`PF ${fmtPrice(toNumber(pnl?.profit_factor))}`} />
+            <Metric label="Avg Win/Loss" value={`${fmtPrice(toNumber(pnl?.average_win))} / ${fmtPrice(toNumber(pnl?.average_loss))}`} detail="Net after fees" />
           </section>
 
           <section className="mb-4 grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)_minmax(340px,0.9fr)]">
@@ -708,7 +724,7 @@ function AutomationPanel({
         <Metric label="Strategy" value={config?.strategy ?? "—"} detail={config?.symbol ?? "—"} />
         <Metric label="Notional" value={`$${fmtPrice(toNumber(config?.notional))}`} detail={`Cap $${fmtPrice(toNumber(config?.max_position_notional))}`} />
         <Metric label="Poll" value={`${fmtPrice(toNumber(config?.poll_seconds))}s`} detail={config?.interval ?? "—"} />
-        <Metric label="Last Signal" value={status?.last_signal?.signal ?? "—"} detail={status?.last_signal?.status ?? "No signals"} />
+        <Metric label="Entry Filter" value={`${fmtPrice(toNumber(config?.min_expected_move_bps))} bps`} detail={`Vol ${fmtPrice(toNumber(config?.min_volume_ratio))}x`} />
       </section>
 
       <section className="mb-4 grid gap-3 md:grid-cols-5">

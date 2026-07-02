@@ -29,8 +29,10 @@ class AutomationConfig:
     short_window: int = 5
     long_window: int = 20
     momentum_window: int = 20
-    breakout_bps: Decimal = Decimal("10")
+    breakout_bps: Decimal = Decimal("25")
     exit_window: int = 10
+    min_expected_move_bps: Decimal = Decimal("35")
+    min_volume_ratio: Decimal = Decimal("1.20")
     stop_loss_bps: Decimal = Decimal("50")
     trailing_stop_bps: Decimal = Decimal("35")
     take_profit_bps: Decimal = Decimal("100")
@@ -115,6 +117,8 @@ class AutomatedSimulationWorker:
         payload["notional"] = str(self.config.notional)
         payload["max_position_notional"] = str(self.config.max_position_notional)
         payload["breakout_bps"] = str(self.config.breakout_bps)
+        payload["min_expected_move_bps"] = str(self.config.min_expected_move_bps)
+        payload["min_volume_ratio"] = str(self.config.min_volume_ratio)
         payload["stop_loss_bps"] = str(self.config.stop_loss_bps)
         payload["trailing_stop_bps"] = str(self.config.trailing_stop_bps)
         payload["take_profit_bps"] = str(self.config.take_profit_bps)
@@ -316,16 +320,33 @@ class AutomatedSimulationWorker:
         close = Decimal(str(candles[-1]["close"]))
         prior = candles[-config.momentum_window - 1 : -1]
         prior_high = max(Decimal(str(row["high"])) for row in prior)
+        prior_close = Decimal(str(prior[0]["close"]))
+        price_change_bps = ((close - prior_close) / prior_close) * Decimal("10000") if prior_close > 0 else Decimal("0")
+        recent_volume = Decimal(str(candles[-1].get("volume") or 0))
+        average_prior_volume = _mean([Decimal(str(row.get("volume") or 0)) for row in prior])
+        volume_ratio = recent_volume / average_prior_volume if average_prior_volume > 0 else Decimal("0")
         exit_rows = candles[-config.exit_window - 1 : -1]
         exit_average = _mean([Decimal(str(row["close"])) for row in exit_rows])
         breakout_level = prior_high * (Decimal("1") + config.breakout_bps / Decimal("10000"))
+        round_trip_cost_bps = _estimated_round_trip_cost_bps()
+        required_move_bps = max(config.min_expected_move_bps, round_trip_cost_bps + Decimal("10"))
         metrics = {
             "close": str(close),
             "prior_high": str(prior_high),
             "breakout_level": str(breakout_level),
             "exit_average": str(exit_average),
+            "price_change_bps": str(price_change_bps),
+            "recent_volume": str(recent_volume),
+            "average_prior_volume": str(average_prior_volume),
+            "volume_ratio": str(volume_ratio),
+            "round_trip_cost_bps": str(round_trip_cost_bps),
+            "required_move_bps": str(required_move_bps),
         }
         if position_qty <= 0 and close > breakout_level:
+            if price_change_bps < required_move_bps:
+                return "hold", "expected_move_below_cost_threshold", metrics
+            if volume_ratio < config.min_volume_ratio:
+                return "hold", "volume_confirmation_failed", metrics
             return "buy", "close_broke_above_prior_high", metrics
         if position_qty > 0 and close < exit_average:
             return "sell", "close_fell_below_exit_average", metrics
@@ -586,3 +607,9 @@ def _elapsed_minutes(start: datetime, end: datetime) -> Decimal:
     if end.tzinfo is None:
         end = end.replace(tzinfo=timezone.utc)
     return Decimal(str(max(0.0, (end - start).total_seconds()) / 60))
+
+
+def _estimated_round_trip_cost_bps() -> Decimal:
+    fee_bps = Decimal(str(settings.simulation_fee_bps))
+    slippage_bps = Decimal(str(settings.simulation_slippage_bps))
+    return fee_bps * Decimal("2") + slippage_bps * Decimal("2")

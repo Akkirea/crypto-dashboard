@@ -1132,6 +1132,100 @@ class Database:
             "positions": position_rows,
         }
 
+    async def fetch_simulation_pnl(
+        self,
+        portfolio_id: str = "default",
+        marks: Optional[dict[str, float]] = None,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        portfolio = await self.fetch_simulation_portfolio(portfolio_id=portfolio_id, marks=marks)
+        fills = list(reversed(await self.fetch_simulation_fills(portfolio_id=portfolio_id, limit=limit)))
+        open_qty = Decimal("0")
+        avg_entry = Decimal("0")
+        entry_fee = Decimal("0")
+        entry_time = None
+        closed_trades: list[dict[str, Any]] = []
+
+        for fill in fills:
+            side = fill["side"]
+            quantity = Decimal(fill["quantity"])
+            price = Decimal(fill["price"])
+            fee = Decimal(fill["fee"])
+            if side == "buy":
+                if open_qty == 0:
+                    avg_entry = price
+                    entry_fee = fee
+                    entry_time = fill["created_at"]
+                else:
+                    avg_entry = ((avg_entry * open_qty) + (price * quantity)) / (open_qty + quantity)
+                    entry_fee += fee
+                open_qty += quantity
+                continue
+
+            allocated_entry_fee = entry_fee * (quantity / open_qty) if open_qty else Decimal("0")
+            gross_pnl = (price - avg_entry) * quantity
+            fees = allocated_entry_fee + fee
+            net_pnl = gross_pnl - fees
+            basis = (avg_entry * quantity) + allocated_entry_fee
+            return_pct = (net_pnl / basis * Decimal("100")) if basis > 0 else None
+            closed_trades.append(
+                {
+                    "entry_time": entry_time,
+                    "exit_time": fill["created_at"],
+                    "symbol": fill["symbol"],
+                    "quantity": quantity,
+                    "entry_price": avg_entry,
+                    "exit_price": price,
+                    "notional": avg_entry * quantity,
+                    "gross_pnl": gross_pnl,
+                    "fees": fees,
+                    "net_pnl": net_pnl,
+                    "return_pct": return_pct,
+                }
+            )
+            open_qty -= quantity
+            if open_qty <= Decimal("0.000000001"):
+                open_qty = Decimal("0")
+                avg_entry = Decimal("0")
+                entry_fee = Decimal("0")
+                entry_time = None
+
+        wins = [trade for trade in closed_trades if trade["net_pnl"] > 0]
+        losses = [trade for trade in closed_trades if trade["net_pnl"] < 0]
+        gross_realized_pnl = sum((trade["gross_pnl"] for trade in closed_trades), Decimal("0"))
+        total_fees = sum((trade["fees"] for trade in closed_trades), Decimal("0"))
+        net_realized_pnl = sum((trade["net_pnl"] for trade in closed_trades), Decimal("0"))
+        gross_profit = sum((trade["net_pnl"] for trade in wins), Decimal("0"))
+        gross_loss = abs(sum((trade["net_pnl"] for trade in losses), Decimal("0")))
+        equity = Decimal(portfolio["equity"])
+        initial_cash = Decimal(portfolio["initial_cash"])
+        unrealized_pnl = Decimal(portfolio["unrealized_pnl"])
+        return {
+            "portfolio_id": portfolio_id,
+            "initial_cash": initial_cash,
+            "cash_balance": Decimal(portfolio["cash_balance"]),
+            "equity": equity,
+            "gross_realized_pnl": gross_realized_pnl,
+            "total_fees": total_fees,
+            "net_realized_pnl": net_realized_pnl,
+            "unrealized_pnl": unrealized_pnl,
+            "equity_pnl": equity - initial_cash,
+            "equity_return_pct": ((equity - initial_cash) / initial_cash * Decimal("100"))
+            if initial_cash > 0
+            else None,
+            "closed_trade_count": len(closed_trades),
+            "winning_trade_count": len(wins),
+            "losing_trade_count": len(losses),
+            "win_rate_pct": (Decimal(len(wins)) / Decimal(len(closed_trades)) * Decimal("100"))
+            if closed_trades
+            else None,
+            "average_win": (gross_profit / Decimal(len(wins))) if wins else None,
+            "average_loss": (-gross_loss / Decimal(len(losses))) if losses else None,
+            "profit_factor": (gross_profit / gross_loss) if gross_loss > 0 else None,
+            "closed_trades": list(reversed(closed_trades[-100:])),
+            "source": "fills_fifo_net_of_fees",
+        }
+
     async def create_simulation_market_order(
         self,
         *,

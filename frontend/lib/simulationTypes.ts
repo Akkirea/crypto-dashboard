@@ -225,6 +225,8 @@ export type AutomationStatus = {
     momentum_window: number;
     breakout_bps: string | number;
     exit_window: number;
+    min_expected_move_bps: string | number;
+    min_volume_ratio: string | number;
     stop_loss_bps: string | number;
     trailing_stop_bps: string | number;
     take_profit_bps: string | number;
@@ -250,4 +252,38 @@ export type AutomationSignal = {
   order_id: number | null;
   payload: Record<string, unknown>;
   created_at: string;
+};
+
+export type SimulationPnl = {
+  portfolio_id: string;
+  initial_cash: string | number;
+  cash_balance: string | number;
+  equity: string | number;
+  gross_realized_pnl: string | number;
+  total_fees: string | number;
+  net_realized_pnl: string | number;
+  unrealized_pnl: string | number;
+  equity_pnl: string | number;
+  equity_return_pct: string | number | null;
+  closed_trade_count: number;
+  winning_trade_count: number;
+  losing_trade_count: number;
+  win_rate_pct: string | number | null;
+  average_win: string | number | null;
+  average_loss: string | number | null;
+  profit_factor: string | number | null;
+  source: string;
+  closed_trades: Array<{
+    entry_time: string | null;
+    exit_time: string;
+    symbol: string;
+    quantity: string | number;
+    entry_price: string | number;
+    exit_price: string | number;
+    notional: string | number;
+    gross_pnl: string | number;
+    fees: string | number;
+    net_pnl: string | number;
+    return_pct: string | number | null;
+  }>;
 };
