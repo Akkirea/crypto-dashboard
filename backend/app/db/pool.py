@@ -27,6 +27,24 @@ def _decode_json_fields(row: dict[str, Any], *fields: str) -> dict[str, Any]:
     return row
 
 
+def _experiment_validation(pnl: dict[str, Any]) -> dict[str, Any]:
+    trades = int(pnl.get("closed_trade_count") or 0)
+    net_pnl = Decimal(str(pnl.get("net_realized_pnl") or 0))
+    profit_factor = pnl.get("profit_factor")
+    pf = Decimal(str(profit_factor)) if profit_factor is not None else None
+    if trades < 30:
+        return {
+            "status": "collecting",
+            "reason": "needs_at_least_30_closed_trades_for_initial_read",
+            "required_trades": 30,
+        }
+    if net_pnl <= 0:
+        return {"status": "failing", "reason": "net_pnl_not_positive", "required_trades": 30}
+    if pf is not None and pf < Decimal("1.3"):
+        return {"status": "weak", "reason": "profit_factor_below_1_3", "required_trades": 30}
+    return {"status": "promising", "reason": "initial_forward_test_thresholds_met", "required_trades": 30}
+
+
 def _json_default(value: Any) -> str:
     if isinstance(value, datetime):
         return value.isoformat()
@@ -263,6 +281,7 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS simulation_orders (
                   id BIGSERIAL PRIMARY KEY,
+                  experiment_id BIGINT,
                   portfolio_id TEXT NOT NULL REFERENCES simulation_portfolios(id),
                   exchange TEXT NOT NULL,
                   symbol TEXT NOT NULL,
@@ -287,6 +306,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS simulation_fills (
                   id BIGSERIAL PRIMARY KEY,
                   order_id BIGINT NOT NULL REFERENCES simulation_orders(id),
+                  experiment_id BIGINT,
                   portfolio_id TEXT NOT NULL REFERENCES simulation_portfolios(id),
                   exchange TEXT NOT NULL,
                   symbol TEXT NOT NULL,
@@ -365,6 +385,7 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS simulation_strategy_signals (
                   id BIGSERIAL PRIMARY KEY,
+                  experiment_id BIGINT,
                   portfolio_id TEXT NOT NULL,
                   exchange TEXT NOT NULL,
                   symbol TEXT NOT NULL,
@@ -383,6 +404,46 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_simulation_strategy_signals_symbol_time
                 ON simulation_strategy_signals(symbol, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS simulation_experiments (
+                  id BIGSERIAL PRIMARY KEY,
+                  portfolio_id TEXT NOT NULL REFERENCES simulation_portfolios(id),
+                  exchange TEXT NOT NULL,
+                  symbol TEXT NOT NULL,
+                  interval TEXT NOT NULL,
+                  strategy TEXT NOT NULL,
+                  status TEXT NOT NULL DEFAULT 'running'
+                    CHECK (status IN ('running', 'completed', 'stopped')),
+                  parameters JSONB NOT NULL DEFAULT '{}'::jsonb,
+                  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  ended_at TIMESTAMPTZ,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_simulation_experiments_time
+                ON simulation_experiments(started_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_simulation_experiments_status
+                ON simulation_experiments(status, started_at DESC);
+
+                ALTER TABLE simulation_orders
+                ADD COLUMN IF NOT EXISTS experiment_id BIGINT REFERENCES simulation_experiments(id);
+
+                ALTER TABLE simulation_fills
+                ADD COLUMN IF NOT EXISTS experiment_id BIGINT REFERENCES simulation_experiments(id);
+
+                ALTER TABLE simulation_strategy_signals
+                ADD COLUMN IF NOT EXISTS experiment_id BIGINT REFERENCES simulation_experiments(id);
+
+                CREATE INDEX IF NOT EXISTS idx_simulation_orders_experiment_time
+                ON simulation_orders(experiment_id, submitted_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_simulation_fills_experiment_time
+                ON simulation_fills(experiment_id, created_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_simulation_signals_experiment_time
+                ON simulation_strategy_signals(experiment_id, created_at DESC);
 
                 INSERT INTO symbols(symbol, base_asset, quote_asset)
                 VALUES
@@ -968,6 +1029,7 @@ class Database:
     async def save_strategy_signal(
         self,
         *,
+        experiment_id: Optional[int] = None,
         portfolio_id: str,
         exchange: str,
         symbol: str,
@@ -984,13 +1046,14 @@ class Database:
         row = await self.pool.fetchrow(
             """
             INSERT INTO simulation_strategy_signals(
-              portfolio_id, exchange, symbol, strategy, signal, status,
+              experiment_id, portfolio_id, exchange, symbol, strategy, signal, status,
               reason, candle_time, order_id, payload
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
-            RETURNING id, portfolio_id, exchange, symbol, strategy, signal,
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
+            RETURNING id, experiment_id, portfolio_id, exchange, symbol, strategy, signal,
                       status, reason, candle_time, order_id, payload, created_at
             """,
+            experiment_id,
             portfolio_id,
             exchange.lower(),
             symbol.upper(),
@@ -1014,7 +1077,7 @@ class Database:
             return []
         rows = await self.pool.fetch(
             """
-            SELECT id, portfolio_id, exchange, symbol, strategy, signal,
+            SELECT id, experiment_id, portfolio_id, exchange, symbol, strategy, signal,
                    status, reason, candle_time, order_id, payload, created_at
             FROM simulation_strategy_signals
             WHERE portfolio_id = $1
@@ -1033,7 +1096,7 @@ class Database:
             return []
         rows = await self.pool.fetch(
             """
-            SELECT id, portfolio_id, exchange, symbol, side, order_type, status,
+            SELECT id, experiment_id, portfolio_id, exchange, symbol, side, order_type, status,
                    requested_quantity, filled_quantity, fill_price, fee,
                    submitted_at, filled_at, rejection_reason, payload
             FROM simulation_orders
@@ -1053,7 +1116,7 @@ class Database:
             return []
         rows = await self.pool.fetch(
             """
-            SELECT id, order_id, portfolio_id, exchange, symbol, side, price,
+            SELECT id, order_id, experiment_id, portfolio_id, exchange, symbol, side, price,
                    quantity, notional, fee, liquidity, created_at
             FROM simulation_fills
             WHERE portfolio_id = $1
@@ -1064,6 +1127,125 @@ class Database:
             limit,
         )
         return [dict(row) for row in rows]
+
+    async def fetch_simulation_fills_for_pnl(
+        self,
+        portfolio_id: str = "default",
+        limit: int = 1000,
+        experiment_id: Optional[int] = None,
+    ) -> list[dict[str, Any]]:
+        if not self.pool:
+            return []
+        if experiment_id is None:
+            return await self.fetch_simulation_fills(portfolio_id=portfolio_id, limit=limit)
+        rows = await self.pool.fetch(
+            """
+            SELECT id, order_id, experiment_id, portfolio_id, exchange, symbol, side, price,
+                   quantity, notional, fee, liquidity, created_at
+            FROM simulation_fills
+            WHERE portfolio_id = $1 AND experiment_id = $2
+            ORDER BY created_at DESC
+            LIMIT $3
+            """,
+            portfolio_id,
+            experiment_id,
+            limit,
+        )
+        return [dict(row) for row in rows]
+
+    async def create_simulation_experiment(
+        self,
+        *,
+        portfolio_id: str,
+        exchange: str,
+        symbol: str,
+        interval: str,
+        strategy: str,
+        parameters: dict[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        if not self.pool:
+            return None
+        await self._ensure_simulation_portfolio(portfolio_id)
+        row = await self.pool.fetchrow(
+            """
+            INSERT INTO simulation_experiments(
+              portfolio_id, exchange, symbol, interval, strategy, status, parameters
+            )
+            VALUES ($1,$2,$3,$4,$5,'running',$6::jsonb)
+            RETURNING id, portfolio_id, exchange, symbol, interval, strategy, status,
+                      parameters, started_at, ended_at, created_at, updated_at
+            """,
+            portfolio_id,
+            exchange.lower(),
+            symbol.upper(),
+            interval,
+            strategy,
+            json.dumps(parameters, default=_json_default),
+        )
+        return _decode_json_fields(dict(row), "parameters")
+
+    async def end_simulation_experiment(self, experiment_id: int) -> Optional[dict[str, Any]]:
+        if not self.pool:
+            return None
+        row = await self.pool.fetchrow(
+            """
+            UPDATE simulation_experiments
+            SET status = 'stopped',
+                ended_at = COALESCE(ended_at, now()),
+                updated_at = now()
+            WHERE id = $1
+            RETURNING id, portfolio_id, exchange, symbol, interval, strategy, status,
+                      parameters, started_at, ended_at, created_at, updated_at
+            """,
+            experiment_id,
+        )
+        return _decode_json_fields(dict(row), "parameters") if row else None
+
+    async def fetch_simulation_experiments(
+        self,
+        *,
+        portfolio_id: str = "default",
+        limit: int = 25,
+    ) -> list[dict[str, Any]]:
+        if not self.pool:
+            return []
+        rows = await self.pool.fetch(
+            """
+            SELECT id, portfolio_id, exchange, symbol, interval, strategy, status,
+                   parameters, started_at, ended_at, created_at, updated_at
+            FROM simulation_experiments
+            WHERE portfolio_id = $1
+            ORDER BY started_at DESC
+            LIMIT $2
+            """,
+            portfolio_id,
+            limit,
+        )
+        experiments: list[dict[str, Any]] = []
+        for row in rows:
+            experiment = _decode_json_fields(dict(row), "parameters")
+            pnl = await self.fetch_simulation_pnl(
+                portfolio_id=portfolio_id,
+                experiment_id=experiment["id"],
+            )
+            experiment["pnl"] = {
+                key: pnl[key]
+                for key in (
+                    "gross_realized_pnl",
+                    "total_fees",
+                    "net_realized_pnl",
+                    "unrealized_pnl",
+                    "equity_pnl",
+                    "closed_trade_count",
+                    "winning_trade_count",
+                    "losing_trade_count",
+                    "win_rate_pct",
+                    "profit_factor",
+                )
+            }
+            experiment["validation"] = _experiment_validation(experiment["pnl"])
+            experiments.append(experiment)
+        return experiments
 
     async def fetch_simulation_positions(self, portfolio_id: str = "default") -> list[dict[str, Any]]:
         if not self.pool:
@@ -1137,9 +1319,18 @@ class Database:
         portfolio_id: str = "default",
         marks: Optional[dict[str, float]] = None,
         limit: int = 1000,
+        experiment_id: Optional[int] = None,
     ) -> dict[str, Any]:
         portfolio = await self.fetch_simulation_portfolio(portfolio_id=portfolio_id, marks=marks)
-        fills = list(reversed(await self.fetch_simulation_fills(portfolio_id=portfolio_id, limit=limit)))
+        fills = list(
+            reversed(
+                await self.fetch_simulation_fills_for_pnl(
+                    portfolio_id=portfolio_id,
+                    limit=limit,
+                    experiment_id=experiment_id,
+                )
+            )
+        )
         open_qty = Decimal("0")
         avg_entry = Decimal("0")
         entry_fee = Decimal("0")
@@ -1202,6 +1393,7 @@ class Database:
         unrealized_pnl = Decimal(portfolio["unrealized_pnl"])
         return {
             "portfolio_id": portfolio_id,
+            "experiment_id": experiment_id,
             "initial_cash": initial_cash,
             "cash_balance": Decimal(portfolio["cash_balance"]),
             "equity": equity,
@@ -1229,6 +1421,7 @@ class Database:
     async def create_simulation_market_order(
         self,
         *,
+        experiment_id: Optional[int] = None,
         portfolio_id: str,
         exchange: str,
         symbol: str,
@@ -1293,19 +1486,20 @@ class Database:
                 order = await conn.fetchrow(
                     """
                     INSERT INTO simulation_orders(
-                      portfolio_id, exchange, symbol, side, order_type, status,
+                      experiment_id, portfolio_id, exchange, symbol, side, order_type, status,
                       requested_quantity, filled_quantity, fill_price, fee,
                       filled_at, rejection_reason, payload
                     )
                     VALUES (
-                      $1,$2,$3,$4,'market',$5,$6,$7,$8,$9,
-                      CASE WHEN $5 = 'filled' THEN now() ELSE NULL END,
-                      $10,$11::jsonb
+                      $1,$2,$3,$4,$5,'market',$6,$7,$8,$9,$10,
+                      CASE WHEN $6 = 'filled' THEN now() ELSE NULL END,
+                      $11,$12::jsonb
                     )
-                    RETURNING id, portfolio_id, exchange, symbol, side, order_type, status,
+                    RETURNING id, experiment_id, portfolio_id, exchange, symbol, side, order_type, status,
                               requested_quantity, filled_quantity, fill_price, fee,
                               submitted_at, filled_at, rejection_reason, payload
                     """,
+                    experiment_id,
                     portfolio_id,
                     exchange,
                     symbol,
@@ -1335,12 +1529,13 @@ class Database:
                 await conn.execute(
                     """
                     INSERT INTO simulation_fills(
-                      order_id, portfolio_id, exchange, symbol, side,
+                      order_id, experiment_id, portfolio_id, exchange, symbol, side,
                       price, quantity, notional, fee
                     )
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
                     """,
                     order["id"],
+                    experiment_id,
                     portfolio_id,
                     exchange,
                     symbol,

@@ -40,6 +40,7 @@ class AutomationConfig:
     max_holding_minutes: Decimal = Decimal("90")
     cooldown_minutes: Decimal = Decimal("5")
     max_spread_bps: Decimal = Decimal("10")
+    experiment_id: Optional[int] = None
 
 
 class AutomatedSimulationWorker:
@@ -87,6 +88,16 @@ class AutomatedSimulationWorker:
                 raise ValueError("max_position_notional must be positive")
             if config.strategy == "sma_cross" and config.short_window >= config.long_window:
                 raise ValueError("short_window must be lower than long_window")
+            if config.experiment_id is None:
+                experiment = await self.db.create_simulation_experiment(
+                    portfolio_id=config.portfolio_id,
+                    exchange=config.exchange,
+                    symbol=config.symbol,
+                    interval=config.interval,
+                    strategy=config.strategy,
+                    parameters=self._config_payload(config),
+                )
+                config.experiment_id = experiment["id"] if experiment else None
             config.enabled = True
             self.config = config
             self._last_candle_key = None
@@ -102,7 +113,11 @@ class AutomatedSimulationWorker:
 
     async def stop_strategy(self) -> dict[str, Any]:
         async with self._lock:
+            experiment_id = self.config.experiment_id
             self.config.enabled = False
+            self.config.experiment_id = None
+        if experiment_id is not None:
+            await self.db.end_simulation_experiment(experiment_id)
         await self.db.record_system_event(
             "simulation_automation",
             "stopped",
@@ -113,27 +128,30 @@ class AutomatedSimulationWorker:
         return self.status()
 
     def status(self) -> dict[str, Any]:
-        payload = asdict(self.config)
-        payload["notional"] = str(self.config.notional)
-        payload["max_position_notional"] = str(self.config.max_position_notional)
-        payload["breakout_bps"] = str(self.config.breakout_bps)
-        payload["min_expected_move_bps"] = str(self.config.min_expected_move_bps)
-        payload["min_volume_ratio"] = str(self.config.min_volume_ratio)
-        payload["stop_loss_bps"] = str(self.config.stop_loss_bps)
-        payload["trailing_stop_bps"] = str(self.config.trailing_stop_bps)
-        payload["take_profit_bps"] = str(self.config.take_profit_bps)
-        payload["min_holding_minutes"] = str(self.config.min_holding_minutes)
-        payload["max_holding_minutes"] = str(self.config.max_holding_minutes)
-        payload["cooldown_minutes"] = str(self.config.cooldown_minutes)
-        payload["max_spread_bps"] = str(self.config.max_spread_bps)
         return {
             "read_only": True,
             "live_trading_enabled": False,
             "automated_simulation_enabled": self.config.enabled,
-            "config": payload,
+            "config": self._config_payload(self.config),
             "last_signal": self._last_signal,
             "last_error": self._last_error,
         }
+
+    def _config_payload(self, config: AutomationConfig) -> dict[str, Any]:
+        payload = asdict(config)
+        payload["notional"] = str(config.notional)
+        payload["max_position_notional"] = str(config.max_position_notional)
+        payload["breakout_bps"] = str(config.breakout_bps)
+        payload["min_expected_move_bps"] = str(config.min_expected_move_bps)
+        payload["min_volume_ratio"] = str(config.min_volume_ratio)
+        payload["stop_loss_bps"] = str(config.stop_loss_bps)
+        payload["trailing_stop_bps"] = str(config.trailing_stop_bps)
+        payload["take_profit_bps"] = str(config.take_profit_bps)
+        payload["min_holding_minutes"] = str(config.min_holding_minutes)
+        payload["max_holding_minutes"] = str(config.max_holding_minutes)
+        payload["cooldown_minutes"] = str(config.cooldown_minutes)
+        payload["max_spread_bps"] = str(config.max_spread_bps)
+        return payload
 
     async def evaluate_once(self) -> Optional[dict[str, Any]]:
         async with self._lock:
@@ -243,6 +261,7 @@ class AutomatedSimulationWorker:
             quantity = position_qty
 
         order = await self.db.create_simulation_market_order(
+            experiment_id=config.experiment_id,
             portfolio_id=config.portfolio_id,
             exchange=config.exchange,
             symbol=config.symbol,
@@ -253,6 +272,7 @@ class AutomatedSimulationWorker:
             payload={
                 "source": "automated_simulation",
                 "strategy": config.strategy,
+                "experiment_id": config.experiment_id,
                 "signal_reason": reason,
                 "signal_metrics": metrics,
                 "read_only": True,
@@ -591,6 +611,7 @@ class AutomatedSimulationWorker:
             candle_time=candle_time,
             order_id=order_id,
             payload=payload,
+            experiment_id=config.experiment_id,
         )
         if saved:
             self._last_signal = saved

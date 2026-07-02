@@ -96,6 +96,7 @@ export type SimulationPortfolio = {
 
 export type SimulationOrder = {
   id: number;
+  experiment_id: number | null;
   portfolio_id: string;
   exchange: string;
   symbol: string;
@@ -114,6 +115,7 @@ export type SimulationOrder = {
 export type SimulationFill = {
   id: number;
   order_id: number;
+  experiment_id: number | null;
   portfolio_id: string;
   exchange: string;
   symbol: string;
@@ -234,6 +236,7 @@ export type AutomationStatus = {
     max_holding_minutes: string | number;
     cooldown_minutes: string | number;
     max_spread_bps: string | number;
+    experiment_id: number | null;
   };
   last_signal: AutomationSignal | null;
   last_error: string | null;
@@ -241,6 +244,7 @@ export type AutomationStatus = {
 
 export type AutomationSignal = {
   id: number;
+  experiment_id: number | null;
   portfolio_id: string;
   exchange: string;
   symbol: string;
@@ -286,4 +290,36 @@ export type SimulationPnl = {
     net_pnl: string | number;
     return_pct: string | number | null;
   }>;
+};
+
+export type SimulationExperiment = {
+  id: number;
+  portfolio_id: string;
+  exchange: string;
+  symbol: string;
+  interval: SimulationInterval;
+  strategy: BacktestStrategy;
+  status: "running" | "completed" | "stopped";
+  parameters: Record<string, unknown>;
+  started_at: string;
+  ended_at: string | null;
+  created_at: string;
+  updated_at: string;
+  pnl: {
+    gross_realized_pnl: string | number;
+    total_fees: string | number;
+    net_realized_pnl: string | number;
+    unrealized_pnl: string | number;
+    equity_pnl: string | number;
+    closed_trade_count: number;
+    winning_trade_count: number;
+    losing_trade_count: number;
+    win_rate_pct: string | number | null;
+    profit_factor: string | number | null;
+  };
+  validation: {
+    status: "collecting" | "failing" | "weak" | "promising";
+    reason: string;
+    required_trades: number;
+  };
 };

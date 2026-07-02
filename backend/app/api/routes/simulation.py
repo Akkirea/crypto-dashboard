@@ -330,10 +330,37 @@ async def portfolio(
 async def pnl(
     request: Request,
     portfolio_id: str = Query("default", max_length=64),
+    experiment_id: Optional[int] = Query(None, ge=1),
 ) -> dict[str, object]:
     return await request.app.state.db.fetch_simulation_pnl(
         portfolio_id=portfolio_id,
         marks=request.app.state.market_state.latest_prices,
+        experiment_id=experiment_id,
+    )
+
+
+@router.get("/experiments")
+async def experiments(
+    request: Request,
+    portfolio_id: str = Query("default", max_length=64),
+    limit: int = Query(25, ge=1, le=100),
+) -> list[dict[str, object]]:
+    return await request.app.state.db.fetch_simulation_experiments(
+        portfolio_id=portfolio_id,
+        limit=limit,
+    )
+
+
+@router.get("/experiments/{experiment_id}/pnl")
+async def experiment_pnl(
+    request: Request,
+    experiment_id: int,
+    portfolio_id: str = Query("default", max_length=64),
+) -> dict[str, object]:
+    return await request.app.state.db.fetch_simulation_pnl(
+        portfolio_id=portfolio_id,
+        marks=request.app.state.market_state.latest_prices,
+        experiment_id=experiment_id,
     )
 
 

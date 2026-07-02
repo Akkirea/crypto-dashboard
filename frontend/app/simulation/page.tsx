@@ -22,6 +22,7 @@ import {
   BacktestStrategy,
   SimulationCandle,
   SimulationConfig,
+  SimulationExperiment,
   SimulationFill,
   SimulationInterval,
   SimulationOrder,
@@ -47,6 +48,7 @@ export default function SimulationPage() {
   const [quantity, setQuantity] = useState("0.001");
   const [backtest, setBacktest] = useState<BacktestResult | null>(null);
   const [backtestRuns, setBacktestRuns] = useState<BacktestRunSummary[]>([]);
+  const [experiments, setExperiments] = useState<SimulationExperiment[]>([]);
   const [automation, setAutomation] = useState<AutomationStatus | null>(null);
   const [automationSignals, setAutomationSignals] = useState<AutomationSignal[]>([]);
   const [strategyInterval, setStrategyInterval] = useState<SimulationInterval>("5m");
@@ -93,7 +95,7 @@ export default function SimulationPage() {
     async function loadMarketData() {
       try {
         const httpUrl = backendHttpUrl();
-        const [snapshotResponse, candleResponse, tradeResponse, portfolioResponse, pnlResponse, orderResponse, fillResponse] =
+        const [snapshotResponse, candleResponse, tradeResponse, portfolioResponse, pnlResponse, experimentResponse, orderResponse, fillResponse] =
           await Promise.all([
           fetch(`${httpUrl}/api/simulation/market/snapshot`, { cache: "no-store" }),
           fetch(`${httpUrl}/api/simulation/market/candles?symbol=${symbol}&interval=${strategyInterval}&limit=12`, {
@@ -104,6 +106,7 @@ export default function SimulationPage() {
           }),
           fetch(`${httpUrl}/api/simulation/portfolio`, { cache: "no-store" }),
           fetch(`${httpUrl}/api/simulation/pnl`, { cache: "no-store" }),
+          fetch(`${httpUrl}/api/simulation/experiments?limit=10`, { cache: "no-store" }),
           fetch(`${httpUrl}/api/simulation/orders?limit=20`, { cache: "no-store" }),
           fetch(`${httpUrl}/api/simulation/fills?limit=20`, { cache: "no-store" })
         ]);
@@ -126,6 +129,10 @@ export default function SimulationPage() {
         if (pnlResponse.ok) {
           const data = (await pnlResponse.json()) as SimulationPnl;
           if (!closed) setPnl(data);
+        }
+        if (experimentResponse.ok) {
+          const data = (await experimentResponse.json()) as SimulationExperiment[];
+          if (!closed) setExperiments(data);
         }
         if (orderResponse.ok) {
           const data = (await orderResponse.json()) as SimulationOrder[];
@@ -553,6 +560,8 @@ export default function SimulationPage() {
             onEvaluate={evaluateAutomation}
           />
 
+          <ExperimentPanel experiments={experiments} />
+
           <BacktestPanel
             symbol={symbol}
             interval={strategyInterval}
@@ -780,6 +789,55 @@ function toMetricNumber(value: unknown) {
 
 function toMetricText(value: unknown, fallback: string) {
   return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
+function ExperimentPanel({ experiments }: { experiments: SimulationExperiment[] }) {
+  return (
+    <section className="mt-5 rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <LineChart className="h-4 w-4 text-accent" aria-hidden />
+          <div>
+            <h2 className="text-sm font-semibold text-ink">Forward Experiments</h2>
+            <p className="mt-1 text-xs text-muted">Live paper results grouped by strategy configuration</p>
+          </div>
+        </div>
+      </div>
+
+      <section className="overflow-hidden rounded-lg border border-white/[0.08]">
+        <div className="grid grid-cols-[70px_1fr_90px_100px_1fr_1fr_1fr_1fr] border-b border-line bg-white/[0.03] px-3 py-2 text-xs text-muted">
+          <span>ID</span>
+          <span>Strategy</span>
+          <span>Frame</span>
+          <span>Status</span>
+          <span className="text-right">Net PnL</span>
+          <span className="text-right">Trades</span>
+          <span className="text-right">PF</span>
+          <span className="text-right">Verdict</span>
+        </div>
+        {experiments.map((experiment) => (
+          <div
+            key={experiment.id}
+            className="grid grid-cols-[70px_1fr_90px_100px_1fr_1fr_1fr_1fr] border-b border-white/[0.06] px-3 py-2 text-sm tabular-nums"
+          >
+            <span className="text-gold">#{experiment.id}</span>
+            <span className="font-medium text-white">{experiment.strategy}</span>
+            <span className="text-muted">{experiment.interval}</span>
+            <span className={experiment.status === "running" ? "text-buy" : "text-muted"}>{experiment.status}</span>
+            <span className="text-right text-white">${fmtPrice(toNumber(experiment.pnl.net_realized_pnl))}</span>
+            <span className="text-right text-muted">
+              {experiment.pnl.closed_trade_count} ({experiment.pnl.winning_trade_count}W/{experiment.pnl.losing_trade_count}L)
+            </span>
+            <span className="text-right text-muted">{fmtPrice(toNumber(experiment.pnl.profit_factor))}</span>
+            <span className="truncate text-right text-muted">{experiment.validation.status}</span>
+          </div>
+        ))}
+        {!experiments.length ? (
+          <div className="px-3 py-4 text-sm text-muted">Start automation to create a forward-test experiment.</div>
+        ) : null}
+      </section>
+    </section>
+  );
 }
 
 function BacktestPanel({
