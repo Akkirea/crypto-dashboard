@@ -1225,6 +1225,27 @@ class Database:
         )
         return _decode_json_fields(dict(row), "parameters") if row else None
 
+    async def stop_running_simulation_experiments(self, *, reason: str = "backend_startup") -> int:
+        if not self.pool:
+            return 0
+        result = await self.pool.execute(
+            """
+            UPDATE simulation_experiments
+            SET status = 'stopped',
+                ended_at = COALESCE(ended_at, now()),
+                updated_at = now(),
+                parameters = jsonb_set(
+                  parameters,
+                  '{stopped_reason}',
+                  to_jsonb($1::text),
+                  true
+                )
+            WHERE status = 'running'
+            """,
+            reason,
+        )
+        return int(result.split()[-1])
+
     async def fetch_simulation_experiments(
         self,
         *,

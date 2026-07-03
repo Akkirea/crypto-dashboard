@@ -34,12 +34,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     broadcaster = Broadcaster()
     db = Database()
     await db.connect()
+    stopped_experiments = await db.stop_running_simulation_experiments(reason="backend_startup")
     await db.record_system_event(
         "api",
         "startup",
         status="ok",
         message="backend startup completed",
-        payload={"mode": "read_only"},
+        payload={"mode": "read_only", "stopped_stale_experiments": stopped_experiments},
     )
 
     async def handle_event(event: MarketEvent) -> None:
