@@ -56,7 +56,7 @@ export default function SimulationPage() {
   const [shortWindow, setShortWindow] = useState("5");
   const [longWindow, setLongWindow] = useState("20");
   const [momentumWindow, setMomentumWindow] = useState("20");
-  const [breakoutBps, setBreakoutBps] = useState("10");
+  const [breakoutBps, setBreakoutBps] = useState("25");
   const [exitWindow, setExitWindow] = useState("10");
   const [backtestLimit, setBacktestLimit] = useState("500");
   const [submitting, setSubmitting] = useState(false);
@@ -322,7 +322,11 @@ export default function SimulationPage() {
           min_holding_minutes: 3,
           max_holding_minutes: 90,
           cooldown_minutes: 5,
-          max_spread_bps: 10
+          max_spread_bps: 10,
+          daily_max_loss: 25,
+          max_trades_per_day: 10,
+          max_fee_burn_per_day: 5,
+          pause_after_loss_streak: 3
         })
       });
       if (!response.ok) {
@@ -748,6 +752,29 @@ function AutomationPanel({
         />
       </section>
 
+      <section className="mb-4 grid gap-3 md:grid-cols-4">
+        <Metric
+          label="Daily Loss Stop"
+          value={`$${fmtPrice(toNumber(config?.daily_max_loss))}`}
+          detail="Pauses new entries"
+        />
+        <Metric
+          label="Trade Limit"
+          value={`${config?.max_trades_per_day ?? "—"}/day`}
+          detail="Filled orders"
+        />
+        <Metric
+          label="Fee Burn Stop"
+          value={`$${fmtPrice(toNumber(config?.max_fee_burn_per_day))}`}
+          detail="Daily simulated fees"
+        />
+        <Metric
+          label="Loss Streak"
+          value={`${config?.pause_after_loss_streak ?? "—"} losses`}
+          detail="Pause threshold"
+        />
+      </section>
+
       <section className="overflow-hidden rounded-lg border border-white/[0.08]">
         <div className="grid grid-cols-[80px_1fr_1fr_1fr_1fr] border-b border-line bg-white/[0.03] px-3 py-2 text-xs text-muted">
           <span>Signal</span>
@@ -805,12 +832,13 @@ function ExperimentPanel({ experiments }: { experiments: SimulationExperiment[] 
       </div>
 
       <section className="overflow-hidden rounded-lg border border-white/[0.08]">
-        <div className="grid grid-cols-[70px_1fr_90px_100px_1fr_1fr_1fr_1fr] border-b border-line bg-white/[0.03] px-3 py-2 text-xs text-muted">
+        <div className="grid grid-cols-[70px_1fr_80px_90px_1fr_1fr_1fr_1fr_1fr] border-b border-line bg-white/[0.03] px-3 py-2 text-xs text-muted">
           <span>ID</span>
           <span>Strategy</span>
           <span>Frame</span>
           <span>Status</span>
           <span className="text-right">Net PnL</span>
+          <span className="text-right">Expectancy</span>
           <span className="text-right">Trades</span>
           <span className="text-right">PF</span>
           <span className="text-right">Verdict</span>
@@ -818,18 +846,26 @@ function ExperimentPanel({ experiments }: { experiments: SimulationExperiment[] 
         {experiments.map((experiment) => (
           <div
             key={experiment.id}
-            className="grid grid-cols-[70px_1fr_90px_100px_1fr_1fr_1fr_1fr] border-b border-white/[0.06] px-3 py-2 text-sm tabular-nums"
+            className="grid grid-cols-[70px_1fr_80px_90px_1fr_1fr_1fr_1fr_1fr] border-b border-white/[0.06] px-3 py-2 text-sm tabular-nums"
           >
             <span className="text-gold">#{experiment.id}</span>
             <span className="font-medium text-white">{experiment.strategy}</span>
             <span className="text-muted">{experiment.interval}</span>
             <span className={experiment.status === "running" ? "text-buy" : "text-muted"}>{experiment.status}</span>
             <span className="text-right text-white">${fmtPrice(toNumber(experiment.pnl.net_realized_pnl))}</span>
+            <span className="text-right text-muted">${fmtPrice(toNumber(experiment.scorecard?.expectancy_per_trade))}</span>
             <span className="text-right text-muted">
               {experiment.pnl.closed_trade_count} ({experiment.pnl.winning_trade_count}W/{experiment.pnl.losing_trade_count}L)
             </span>
-            <span className="text-right text-muted">{fmtPrice(toNumber(experiment.pnl.profit_factor))}</span>
-            <span className="truncate text-right text-muted">{experiment.validation.status}</span>
+            <span className="text-right text-muted">
+              {fmtPrice(toNumber(experiment.pnl.profit_factor))}
+              <span className="ml-1 text-[11px] text-muted/70">
+                / {fmtPrice(toNumber(experiment.scorecard?.fee_drag_pct))}% fee
+              </span>
+            </span>
+            <span className="truncate text-right text-muted" title={experiment.validation.reason}>
+              {experiment.validation.status}
+            </span>
           </div>
         ))}
         {!experiments.length ? (

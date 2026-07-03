@@ -236,6 +236,10 @@ export type AutomationStatus = {
     max_holding_minutes: string | number;
     cooldown_minutes: string | number;
     max_spread_bps: string | number;
+    daily_max_loss: string | number;
+    max_trades_per_day: number;
+    max_fee_burn_per_day: string | number;
+    pause_after_loss_streak: number;
     experiment_id: number | null;
   };
   last_signal: AutomationSignal | null;
@@ -321,5 +325,16 @@ export type SimulationExperiment = {
     status: "collecting" | "failing" | "weak" | "promising";
     reason: string;
     required_trades: number;
+  };
+  scorecard?: {
+    closed_trades: number;
+    wins: number;
+    losses: number;
+    expectancy_per_trade: string | number | null;
+    net_realized_pnl: string | number;
+    fees: string | number;
+    fee_drag_pct: string | number | null;
+    win_rate_pct: string | number | null;
+    profit_factor: string | number | null;
   };
 };

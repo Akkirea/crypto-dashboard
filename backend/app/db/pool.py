@@ -45,6 +45,30 @@ def _experiment_validation(pnl: dict[str, Any]) -> dict[str, Any]:
     return {"status": "promising", "reason": "initial_forward_test_thresholds_met", "required_trades": 30}
 
 
+def _experiment_scorecard(pnl: dict[str, Any]) -> dict[str, Any]:
+    trades = int(pnl.get("closed_trade_count") or 0)
+    wins = int(pnl.get("winning_trade_count") or 0)
+    losses = int(pnl.get("losing_trade_count") or 0)
+    gross_realized = Decimal(str(pnl.get("gross_realized_pnl") or 0))
+    fees = Decimal(str(pnl.get("total_fees") or 0))
+    net_realized = Decimal(str(pnl.get("net_realized_pnl") or 0))
+    win_rate = pnl.get("win_rate_pct")
+    profit_factor = pnl.get("profit_factor")
+    expectancy = net_realized / Decimal(trades) if trades else None
+    fee_drag_pct = (fees / abs(gross_realized) * Decimal("100")) if gross_realized else None
+    return {
+        "closed_trades": trades,
+        "wins": wins,
+        "losses": losses,
+        "expectancy_per_trade": expectancy,
+        "net_realized_pnl": net_realized,
+        "fees": fees,
+        "fee_drag_pct": fee_drag_pct,
+        "win_rate_pct": win_rate,
+        "profit_factor": profit_factor,
+    }
+
+
 def _json_default(value: Any) -> str:
     if isinstance(value, datetime):
         return value.isoformat()
@@ -1244,8 +1268,86 @@ class Database:
                 )
             }
             experiment["validation"] = _experiment_validation(experiment["pnl"])
+            experiment["scorecard"] = _experiment_scorecard(experiment["pnl"])
             experiments.append(experiment)
         return experiments
+
+    async def fetch_simulation_risk_state(
+        self,
+        *,
+        portfolio_id: str = "default",
+        experiment_id: Optional[int] = None,
+    ) -> dict[str, Any]:
+        if not self.pool:
+            return {
+                "portfolio_id": portfolio_id,
+                "experiment_id": experiment_id,
+                "trades_today": 0,
+                "fees_today": Decimal("0"),
+                "daily_net_pnl": Decimal("0"),
+                "consecutive_losses": 0,
+            }
+
+        if experiment_id is None:
+            order_filter = "portfolio_id = $1"
+            fill_filter = "portfolio_id = $1"
+            values: tuple[Any, ...] = (portfolio_id,)
+        else:
+            order_filter = "portfolio_id = $1 AND experiment_id = $2"
+            fill_filter = "portfolio_id = $1 AND experiment_id = $2"
+            values = (portfolio_id, experiment_id)
+
+        async with self.pool.acquire() as conn:
+            trades_today = await conn.fetchval(
+                f"""
+                SELECT count(*)::int
+                FROM simulation_orders
+                WHERE {order_filter}
+                  AND status = 'filled'
+                  AND submitted_at >= date_trunc('day', now())
+                """,
+                *values,
+            )
+            fees_today = await conn.fetchval(
+                f"""
+                SELECT COALESCE(sum(fee), 0)
+                FROM simulation_fills
+                WHERE {fill_filter}
+                  AND created_at >= date_trunc('day', now())
+                """,
+                *values,
+            )
+
+        pnl = await self.fetch_simulation_pnl(
+            portfolio_id=portfolio_id,
+            experiment_id=experiment_id,
+        )
+        today = datetime.now(timezone.utc).date()
+        daily_net_pnl = Decimal("0")
+        consecutive_losses = 0
+        for trade in pnl.get("closed_trades", []):
+            exit_time = trade.get("exit_time")
+            if isinstance(exit_time, str):
+                exit_dt = datetime.fromisoformat(exit_time.replace("Z", "+00:00"))
+            else:
+                exit_dt = exit_time
+            if isinstance(exit_dt, datetime) and exit_dt.astimezone(timezone.utc).date() == today:
+                daily_net_pnl += Decimal(str(trade.get("net_pnl") or 0))
+
+        for trade in pnl.get("closed_trades", []):
+            if Decimal(str(trade.get("net_pnl") or 0)) < 0:
+                consecutive_losses += 1
+                continue
+            break
+
+        return {
+            "portfolio_id": portfolio_id,
+            "experiment_id": experiment_id,
+            "trades_today": int(trades_today or 0),
+            "fees_today": Decimal(str(fees_today or 0)),
+            "daily_net_pnl": daily_net_pnl,
+            "consecutive_losses": consecutive_losses,
+        }
 
     async def fetch_simulation_positions(self, portfolio_id: str = "default") -> list[dict[str, Any]]:
         if not self.pool:

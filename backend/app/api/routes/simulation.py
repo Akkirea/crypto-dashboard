@@ -77,6 +77,10 @@ class AutomationRequest(BaseModel):
     max_holding_minutes: Decimal = Field(default=Decimal("90"), ge=1, le=10080)
     cooldown_minutes: Decimal = Field(default=Decimal("5"), ge=0, le=1440)
     max_spread_bps: Decimal = Field(default=Decimal("10"), ge=0, le=10000)
+    daily_max_loss: Decimal = Field(default=Decimal("25"), ge=0, le=1000000)
+    max_trades_per_day: int = Field(default=10, ge=1, le=10000)
+    max_fee_burn_per_day: Decimal = Field(default=Decimal("5"), ge=0, le=1000000)
+    pause_after_loss_streak: int = Field(default=3, ge=1, le=10000)
 
 
 @router.get("/config")
@@ -205,6 +209,10 @@ async def start_automation(request: Request, payload: AutomationRequest) -> dict
                 max_holding_minutes=payload.max_holding_minutes,
                 cooldown_minutes=payload.cooldown_minutes,
                 max_spread_bps=payload.max_spread_bps,
+                daily_max_loss=payload.daily_max_loss,
+                max_trades_per_day=payload.max_trades_per_day,
+                max_fee_burn_per_day=payload.max_fee_burn_per_day,
+                pause_after_loss_streak=payload.pause_after_loss_streak,
             )
         )
     except ValueError as exc:

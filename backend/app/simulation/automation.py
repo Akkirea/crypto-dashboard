@@ -40,6 +40,10 @@ class AutomationConfig:
     max_holding_minutes: Decimal = Decimal("90")
     cooldown_minutes: Decimal = Decimal("5")
     max_spread_bps: Decimal = Decimal("10")
+    daily_max_loss: Decimal = Decimal("25")
+    max_trades_per_day: int = 10
+    max_fee_burn_per_day: Decimal = Decimal("5")
+    pause_after_loss_streak: int = 3
     experiment_id: Optional[int] = None
 
 
@@ -151,6 +155,8 @@ class AutomatedSimulationWorker:
         payload["max_holding_minutes"] = str(config.max_holding_minutes)
         payload["cooldown_minutes"] = str(config.cooldown_minutes)
         payload["max_spread_bps"] = str(config.max_spread_bps)
+        payload["daily_max_loss"] = str(config.daily_max_loss)
+        payload["max_fee_burn_per_day"] = str(config.max_fee_burn_per_day)
         return payload
 
     async def evaluate_once(self) -> Optional[dict[str, Any]]:
@@ -211,6 +217,19 @@ class AutomatedSimulationWorker:
             position=position,
             book=book,
         )
+        guardrail = await self._risk_guardrail_decision(config, signal)
+        if guardrail["blocked"]:
+            saved_signal = await self._record_signal(
+                config,
+                "hold",
+                "skipped",
+                "risk_guardrail_blocked_entry",
+                candle["close_time"],
+                {**metrics, "risk_guardrails": guardrail},
+            )
+            await self._pause_after_guardrail(config, guardrail)
+            return saved_signal
+
         if signal == "hold":
             return await self._record_signal(
                 config,
@@ -295,6 +314,64 @@ class AutomatedSimulationWorker:
             order_id=order.get("id"),
         )
         return saved_signal
+
+    async def _risk_guardrail_decision(self, config: AutomationConfig, signal: str) -> dict[str, Any]:
+        if signal != "buy" or config.experiment_id is None:
+            return {"blocked": False, "breaches": []}
+
+        state = await self.db.fetch_simulation_risk_state(
+            portfolio_id=config.portfolio_id,
+            experiment_id=config.experiment_id,
+        )
+        breaches: list[str] = []
+        daily_net_pnl = Decimal(str(state.get("daily_net_pnl") or 0))
+        trades_today = int(state.get("trades_today") or 0)
+        fees_today = Decimal(str(state.get("fees_today") or 0))
+        consecutive_losses = int(state.get("consecutive_losses") or 0)
+
+        if config.daily_max_loss > 0 and daily_net_pnl <= -config.daily_max_loss:
+            breaches.append("daily_max_loss")
+        if config.max_trades_per_day > 0 and trades_today >= config.max_trades_per_day:
+            breaches.append("max_trades_per_day")
+        if config.max_fee_burn_per_day > 0 and fees_today >= config.max_fee_burn_per_day:
+            breaches.append("max_fee_burn_per_day")
+        if config.pause_after_loss_streak > 0 and consecutive_losses >= config.pause_after_loss_streak:
+            breaches.append("pause_after_loss_streak")
+
+        return {
+            "blocked": bool(breaches),
+            "breaches": breaches,
+            "state": state,
+            "limits": {
+                "daily_max_loss": str(config.daily_max_loss),
+                "max_trades_per_day": config.max_trades_per_day,
+                "max_fee_burn_per_day": str(config.max_fee_burn_per_day),
+                "pause_after_loss_streak": config.pause_after_loss_streak,
+            },
+            "action": "pause_automation" if breaches else "allow",
+        }
+
+    async def _pause_after_guardrail(self, config: AutomationConfig, guardrail: dict[str, Any]) -> None:
+        async with self._lock:
+            if self.config.experiment_id != config.experiment_id:
+                return
+            self.config.enabled = False
+            self.config.experiment_id = None
+        if config.experiment_id is not None:
+            await self.db.end_simulation_experiment(config.experiment_id)
+        await self.db.record_system_event(
+            "simulation_automation",
+            "risk_guardrail_pause",
+            severity="warning",
+            status="paused",
+            message="automated simulated strategy paused by risk guardrail",
+            payload={
+                "experiment_id": config.experiment_id,
+                "symbol": config.symbol,
+                "strategy": config.strategy,
+                "guardrail": guardrail,
+            },
+        )
 
     def _update_position_state_after_fill(
         self,
