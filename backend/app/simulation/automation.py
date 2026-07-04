@@ -277,7 +277,22 @@ class AutomatedSimulationWorker:
                     candle["close_time"],
                     metrics,
                 )
-            quantity = position_qty
+            experiment_qty = await self.db.fetch_simulation_experiment_open_quantity(
+                portfolio_id=config.portfolio_id,
+                experiment_id=config.experiment_id,
+                exchange=config.exchange,
+                symbol=config.symbol,
+            )
+            if experiment_qty <= 0:
+                return await self._record_signal(
+                    config,
+                    signal,
+                    "skipped",
+                    "no experiment-owned simulated position to sell",
+                    candle["close_time"],
+                    {**metrics, "experiment_open_quantity": str(experiment_qty)},
+                )
+            quantity = min(position_qty, experiment_qty)
 
         order = await self.db.create_simulation_market_order(
             experiment_id=config.experiment_id,

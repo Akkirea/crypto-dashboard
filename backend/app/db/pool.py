@@ -1177,6 +1177,40 @@ class Database:
         )
         return [dict(row) for row in rows]
 
+    async def fetch_simulation_experiment_open_quantity(
+        self,
+        *,
+        portfolio_id: str = "default",
+        experiment_id: Optional[int],
+        exchange: str,
+        symbol: str,
+    ) -> Decimal:
+        if not self.pool or experiment_id is None:
+            return Decimal("0")
+        rows = await self.pool.fetch(
+            """
+            SELECT side, quantity
+            FROM simulation_fills
+            WHERE portfolio_id = $1
+              AND experiment_id = $2
+              AND exchange = $3
+              AND symbol = $4
+            ORDER BY created_at
+            """,
+            portfolio_id,
+            experiment_id,
+            exchange.lower(),
+            symbol.upper(),
+        )
+        open_qty = Decimal("0")
+        for row in rows:
+            quantity = Decimal(row["quantity"])
+            if row["side"] == "buy":
+                open_qty += quantity
+            else:
+                open_qty = max(Decimal("0"), open_qty - quantity)
+        return open_qty
+
     async def create_simulation_experiment(
         self,
         *,
@@ -1445,20 +1479,29 @@ class Database:
         experiment_id: Optional[int] = None,
     ) -> dict[str, Any]:
         portfolio = await self.fetch_simulation_portfolio(portfolio_id=portfolio_id, marks=marks)
-        fills = list(
-            reversed(
-                await self.fetch_simulation_fills_for_pnl(
-                    portfolio_id=portfolio_id,
-                    limit=limit,
-                    experiment_id=experiment_id,
-                )
+        fill_source = "portfolio_fills"
+        if experiment_id is None:
+            source_fills = await self.fetch_simulation_fills_for_pnl(
+                portfolio_id=portfolio_id,
+                limit=limit,
             )
+        else:
+            # Use the full portfolio FIFO stream so an experiment exit can be matched
+            # against the real entry it closed, even if that entry was not tagged.
+            source_fills = await self.fetch_simulation_fills_for_pnl(
+                portfolio_id=portfolio_id,
+                limit=limit,
+            )
+            fill_source = "portfolio_fifo_filtered_by_experiment_exit"
+        fills = list(
+            reversed(source_fills)
         )
         open_qty = Decimal("0")
         avg_entry = Decimal("0")
         entry_fee = Decimal("0")
         entry_time = None
         closed_trades: list[dict[str, Any]] = []
+        unmatched_exits: list[dict[str, Any]] = []
 
         for fill in fills:
             side = fill["side"]
@@ -1476,27 +1519,33 @@ class Database:
                 open_qty += quantity
                 continue
 
+            if open_qty <= 0:
+                unmatched_exits.append(dict(fill))
+                continue
+
             allocated_entry_fee = entry_fee * (quantity / open_qty) if open_qty else Decimal("0")
             gross_pnl = (price - avg_entry) * quantity
             fees = allocated_entry_fee + fee
             net_pnl = gross_pnl - fees
             basis = (avg_entry * quantity) + allocated_entry_fee
             return_pct = (net_pnl / basis * Decimal("100")) if basis > 0 else None
-            closed_trades.append(
-                {
-                    "entry_time": entry_time,
-                    "exit_time": fill["created_at"],
-                    "symbol": fill["symbol"],
-                    "quantity": quantity,
-                    "entry_price": avg_entry,
-                    "exit_price": price,
-                    "notional": avg_entry * quantity,
-                    "gross_pnl": gross_pnl,
-                    "fees": fees,
-                    "net_pnl": net_pnl,
-                    "return_pct": return_pct,
-                }
-            )
+            trade = {
+                "entry_time": entry_time,
+                "exit_time": fill["created_at"],
+                "symbol": fill["symbol"],
+                "quantity": quantity,
+                "entry_price": avg_entry,
+                "exit_price": price,
+                "notional": avg_entry * quantity,
+                "gross_pnl": gross_pnl,
+                "fees": fees,
+                "net_pnl": net_pnl,
+                "return_pct": return_pct,
+                "entry_experiment_id": None,
+                "exit_experiment_id": fill.get("experiment_id"),
+            }
+            if experiment_id is None or fill.get("experiment_id") == experiment_id:
+                closed_trades.append(trade)
             open_qty -= quantity
             if open_qty <= Decimal("0.000000001"):
                 open_qty = Decimal("0")
@@ -1538,7 +1587,8 @@ class Database:
             "average_loss": (-gross_loss / Decimal(len(losses))) if losses else None,
             "profit_factor": (gross_profit / gross_loss) if gross_loss > 0 else None,
             "closed_trades": list(reversed(closed_trades[-100:])),
-            "source": "fills_fifo_net_of_fees",
+            "unmatched_exit_count": len(unmatched_exits),
+            "source": fill_source,
         }
 
     async def create_simulation_market_order(

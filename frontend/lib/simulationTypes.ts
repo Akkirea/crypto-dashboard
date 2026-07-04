@@ -280,6 +280,7 @@ export type SimulationPnl = {
   average_win: string | number | null;
   average_loss: string | number | null;
   profit_factor: string | number | null;
+  unmatched_exit_count?: number;
   source: string;
   closed_trades: Array<{
     entry_time: string | null;
@@ -293,6 +294,8 @@ export type SimulationPnl = {
     fees: string | number;
     net_pnl: string | number;
     return_pct: string | number | null;
+    entry_experiment_id?: number | null;
+    exit_experiment_id?: number | null;
   }>;
 };
 
