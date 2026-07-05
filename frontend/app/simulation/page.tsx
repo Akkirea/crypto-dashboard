@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import {
   ChevronLeft,
@@ -180,6 +180,15 @@ export default function SimulationPage() {
     () => Object.values(snapshot?.health.message_counts ?? {}).reduce((sum, value) => sum + value, 0),
     [snapshot]
   );
+  const currentExperiment = useMemo(
+    () => experiments.find((experiment) => experiment.id === automation?.config.experiment_id) ?? experiments.find((experiment) => experiment.status === "running") ?? experiments[0] ?? null,
+    [automation?.config.experiment_id, experiments]
+  );
+  const currentExperimentId = currentExperiment?.id ?? automation?.config.experiment_id ?? null;
+  const currentOrders = currentExperimentId === null ? orders : orders.filter((order) => order.experiment_id === currentExperimentId);
+  const currentFills = currentExperimentId === null ? fills : fills.filter((fill) => fill.experiment_id === currentExperimentId);
+  const latestSignal = automation?.last_signal ?? null;
+  const latestManager = positionManagerPayload(latestSignal);
 
   async function submitOrder() {
     setSubmitting(true);
@@ -410,150 +419,16 @@ export default function SimulationPage() {
             </section>
           ) : null}
 
-          <section className="mb-5 grid gap-3 md:grid-cols-4">
-            <Metric label="Mode" value={config?.read_only ? "Read-only" : "—"} detail="No execution keys" />
-            <Metric label="Feed" value={snapshot?.health.connected ? "Live" : "Pending"} detail={`${totalMessages.toLocaleString()} messages`} />
-            <Metric label="Net PnL" value={`$${fmtPrice(toNumber(pnl?.equity_pnl))}`} detail={`${fmtPrice(toNumber(pnl?.equity_return_pct))}% equity`} />
-            <Metric label="Fees" value={`$${fmtPrice(toNumber(pnl?.total_fees))}`} detail={`Gross $${fmtPrice(toNumber(pnl?.gross_realized_pnl))}`} />
-          </section>
-
-          <section className="mb-5 grid gap-3 md:grid-cols-4">
-            <Metric label="Equity" value={`$${fmtPrice(toNumber(pnl?.equity ?? portfolio?.equity))}`} detail={`Cash $${fmtPrice(toNumber(pnl?.cash_balance ?? portfolio?.cash_balance))}`} />
-            <Metric label="Closed Trades" value={`${pnl?.closed_trade_count ?? 0}`} detail={`${pnl?.winning_trade_count ?? 0}W / ${pnl?.losing_trade_count ?? 0}L`} />
-            <Metric label="Win Rate" value={`${fmtPrice(toNumber(pnl?.win_rate_pct))}%`} detail={`PF ${fmtPrice(toNumber(pnl?.profit_factor))}`} />
-            <Metric label="Avg Win/Loss" value={`${fmtPrice(toNumber(pnl?.average_win))} / ${fmtPrice(toNumber(pnl?.average_loss))}`} detail="Net after fees" />
-          </section>
-
-          <section className="mb-4 grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)_minmax(340px,0.9fr)]">
-            <section className="rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
-              <div className="mb-3 flex items-center gap-2">
-                <SlidersHorizontal className="h-4 w-4 text-gold" aria-hidden />
-                <h2 className="text-sm font-semibold text-ink">Paper Order</h2>
-              </div>
-              <div className="mb-4 space-y-3 text-sm">
-                <Row label="Price source" value={config?.fill_model.price_source ?? "—"} />
-                <Row label="Fee" value={`${config?.fill_model.fee_bps ?? "—"} bps`} />
-                <Row label="Slippage" value={`${config?.fill_model.slippage_bps ?? "—"} bps`} />
-                <Row label="Latency" value={`${config?.fill_model.latency_ms ?? "—"} ms`} />
-                <Row label="Position" value={fmtPrice(toNumber(selectedPosition?.quantity))} />
-              </div>
-              <div className="mt-5 flex flex-wrap gap-2">
-                {(config?.symbols ?? ["BTCUSDT", "ETHUSDT", "SOLUSDT"]).map((item) => (
-                  <button
-                    key={item}
-                    type="button"
-                    onClick={() => setSymbol(item)}
-                    className={`h-9 rounded-lg border px-3 text-sm ${
-                      symbol === item
-                        ? "border-gold/50 bg-gold/20 text-white"
-                        : "border-white/10 bg-white/[0.05] text-muted hover:text-white"
-                    }`}
-                  >
-                    {item}
-                  </button>
-                ))}
-              </div>
-              <div className="mt-4 grid grid-cols-2 gap-2">
-                {(["buy", "sell"] as const).map((item) => (
-                  <button
-                    key={item}
-                    type="button"
-                    onClick={() => setSide(item)}
-                    className={`h-10 rounded-lg border text-sm font-medium capitalize ${
-                      side === item
-                        ? item === "buy"
-                          ? "border-buy/50 bg-buy/20 text-white"
-                          : "border-sell/50 bg-sell/20 text-white"
-                        : "border-white/10 bg-white/[0.05] text-muted hover:text-white"
-                    }`}
-                  >
-                    {item}
-                  </button>
-                ))}
-              </div>
-              <label className="mt-4 block text-xs text-muted">
-                Quantity
-                <input
-                  value={quantity}
-                  onChange={(event) => setQuantity(event.target.value)}
-                  className="mt-2 h-10 w-full rounded-lg border border-white/10 bg-black/30 px-3 text-sm text-white outline-none focus:border-gold/50"
-                  inputMode="decimal"
-                />
-              </label>
-              <button
-                type="button"
-                onClick={submitOrder}
-                disabled={submitting}
-                className="mt-4 inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-gold/40 bg-gold/20 text-sm font-medium text-white hover:bg-gold/25 disabled:opacity-50"
-              >
-                <Send className="h-4 w-4" aria-hidden />
-                Submit Simulated Market Order
-              </button>
-              <button
-                type="button"
-                onClick={resetPortfolio}
-                disabled={submitting}
-                className="mt-2 inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] text-sm text-muted hover:text-white disabled:opacity-50"
-              >
-                <RotateCcw className="h-4 w-4" aria-hidden />
-                Reset Paper Portfolio
-              </button>
-            </section>
-
-            <section className="rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
-              <div className="mb-3 flex items-center gap-2">
-                <Database className="h-4 w-4 text-accent" aria-hidden />
-                <h2 className="text-sm font-semibold text-ink">Recent Candles</h2>
-              </div>
-              <div className="grid grid-cols-[1fr_1fr_1fr_1fr_1fr] border-b border-line pb-2 text-xs text-muted">
-                <span>Time</span>
-                <span className="text-right">Open</span>
-                <span className="text-right">High</span>
-                <span className="text-right">Low</span>
-                <span className="text-right">Close</span>
-              </div>
-              {candles.map((candle) => (
-                <div
-                  key={`${candle.symbol}-${candle.interval}-${candle.open_time}`}
-                  className="grid grid-cols-[1fr_1fr_1fr_1fr_1fr] border-b border-white/[0.06] py-2 text-sm tabular-nums"
-                >
-                  <span className="text-muted">{new Date(candle.open_time).toLocaleTimeString()}</span>
-                  <span className="text-right">{fmtPrice(toNumber(candle.open))}</span>
-                  <span className="text-right text-buy">{fmtPrice(toNumber(candle.high))}</span>
-                  <span className="text-right text-sell">{fmtPrice(toNumber(candle.low))}</span>
-                  <span className="text-right text-white">{fmtPrice(toNumber(candle.close))}</span>
-                </div>
-              ))}
-            </section>
-
-            <section className="rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
-              <div className="mb-3 flex items-center gap-2">
-                <Database className="h-4 w-4 text-accent" aria-hidden />
-                <h2 className="text-sm font-semibold text-ink">Recent Trades</h2>
-              </div>
-              <div className="grid grid-cols-[1fr_1fr_1fr] border-b border-line pb-2 text-xs text-muted">
-                <span>Time</span>
-                <span className="text-right">Price</span>
-                <span className="text-right">Qty</span>
-              </div>
-              {trades.map((trade) => (
-                <div
-                  key={`${trade.exchange}-${trade.symbol}-${trade.trade_id}`}
-                  className="grid grid-cols-[1fr_1fr_1fr] border-b border-white/[0.06] py-2 text-sm tabular-nums"
-                >
-                  <span className="text-muted">{new Date(trade.trade_time).toLocaleTimeString()}</span>
-                  <span className="text-right text-white">{fmtPrice(toNumber(trade.price))}</span>
-                  <span className="text-right text-muted">{fmtPrice(toNumber(trade.quantity))}</span>
-                </div>
-              ))}
-            </section>
-          </section>
-
-          <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(340px,0.9fr)]">
-            <PaperPositions positions={portfolio?.positions ?? []} />
-            <PaperOrders orders={orders} />
-            <PaperFills fills={fills} />
-          </section>
+          <MonitorPanel
+            automation={automation}
+            experiment={currentExperiment}
+            pnl={pnl}
+            position={selectedPosition}
+            latestSignal={latestSignal}
+            latestManager={latestManager}
+            feedConnected={snapshot?.health.connected ?? false}
+            messageCount={totalMessages}
+          />
 
           <AutomationPanel
             status={automation}
@@ -564,35 +439,295 @@ export default function SimulationPage() {
             onEvaluate={evaluateAutomation}
           />
 
-          <ExperimentPanel experiments={experiments} />
+          <section className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(360px,0.8fr)]">
+            <ExperimentPanel experiments={experiments} />
+            <section className="grid gap-4">
+              <PaperOrders orders={currentOrders} title="Current Experiment Orders" />
+              <PaperFills fills={currentFills} title="Current Experiment Fills" />
+            </section>
+          </section>
 
-          <BacktestPanel
-            symbol={symbol}
-            interval={strategyInterval}
-            strategy={backtestStrategy}
-            shortWindow={shortWindow}
-            longWindow={longWindow}
-            momentumWindow={momentumWindow}
-            breakoutBps={breakoutBps}
-            exitWindow={exitWindow}
-            limit={backtestLimit}
-            result={backtest}
-            runs={backtestRuns}
-            running={backtesting}
-            onStrategyChange={setBacktestStrategy}
-            onIntervalChange={setStrategyInterval}
-            onShortWindowChange={setShortWindow}
-            onLongWindowChange={setLongWindow}
-            onMomentumWindowChange={setMomentumWindow}
-            onBreakoutBpsChange={setBreakoutBps}
-            onExitWindowChange={setExitWindow}
-            onLimitChange={setBacktestLimit}
-            onRun={runBacktest}
-            onLoadRun={loadBacktestRun}
-          />
+          <CollapsibleSection title="Manual Paper Order" defaultOpen={false}>
+            <ManualOrderPanel
+              config={config}
+              symbols={config?.symbols ?? ["BTCUSDT", "ETHUSDT", "SOLUSDT"]}
+              symbol={symbol}
+              side={side}
+              quantity={quantity}
+              positionQuantity={fmtPrice(toNumber(selectedPosition?.quantity))}
+              submitting={submitting}
+              onSymbolChange={setSymbol}
+              onSideChange={setSide}
+              onQuantityChange={setQuantity}
+              onSubmit={submitOrder}
+              onReset={resetPortfolio}
+            />
+          </CollapsibleSection>
+
+          <CollapsibleSection title="Research Backtests" defaultOpen={false}>
+            <BacktestPanel
+              symbol={symbol}
+              interval={strategyInterval}
+              strategy={backtestStrategy}
+              shortWindow={shortWindow}
+              longWindow={longWindow}
+              momentumWindow={momentumWindow}
+              breakoutBps={breakoutBps}
+              exitWindow={exitWindow}
+              limit={backtestLimit}
+              result={backtest}
+              runs={backtestRuns}
+              running={backtesting}
+              onStrategyChange={setBacktestStrategy}
+              onIntervalChange={setStrategyInterval}
+              onShortWindowChange={setShortWindow}
+              onLongWindowChange={setLongWindow}
+              onMomentumWindowChange={setMomentumWindow}
+              onBreakoutBpsChange={setBreakoutBps}
+              onExitWindowChange={setExitWindow}
+              onLimitChange={setBacktestLimit}
+              onRun={runBacktest}
+              onLoadRun={loadBacktestRun}
+            />
+          </CollapsibleSection>
+
+          <CollapsibleSection title="Market Data Debug" defaultOpen={false}>
+            <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+              <MarketCandles candles={candles} />
+              <MarketTrades trades={trades} />
+            </section>
+            <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(340px,0.9fr)]">
+              <PaperPositions positions={portfolio?.positions ?? []} />
+              <PaperOrders orders={orders} title="All Orders" />
+              <PaperFills fills={fills} title="All Fills" />
+            </section>
+          </CollapsibleSection>
         </section>
       </div>
     </main>
+  );
+}
+
+function MonitorPanel({
+  automation,
+  experiment,
+  pnl,
+  position,
+  latestSignal,
+  latestManager,
+  feedConnected,
+  messageCount
+}: {
+  automation: AutomationStatus | null;
+  experiment: SimulationExperiment | null;
+  pnl: SimulationPnl | null;
+  position: SimulationPortfolio["positions"][number] | undefined;
+  latestSignal: AutomationSignal | null;
+  latestManager: Record<string, unknown> | null;
+  feedConnected: boolean;
+  messageCount: number;
+}) {
+  const running = automation?.automated_simulation_enabled ?? false;
+  const decision = toMetricText(latestManager?.decision, latestSignal?.signal ?? "—");
+  const reason = toMetricText(latestManager?.reason, latestSignal?.reason ?? "No signal yet");
+  const pnlValue = toNumber(experiment?.pnl.net_realized_pnl);
+  const pnlClass = pnlValue === null ? "text-white" : pnlValue >= 0 ? "text-buy" : "text-sell";
+
+  return (
+    <section className="rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <ShieldCheck className={running ? "h-4 w-4 text-buy" : "h-4 w-4 text-muted"} aria-hidden />
+            <h2 className="text-sm font-semibold text-ink">Live Simulation Monitor</h2>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted">
+            <span className={running ? "text-buy" : "text-muted"}>{running ? "Running" : "Stopped"}</span>
+            <span>Experiment #{experiment?.id ?? "—"}</span>
+            <span>{automation?.config.strategy ?? "—"}</span>
+            <span>{automation?.config.interval ?? "—"}</span>
+          </div>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-right text-xs text-muted">
+          <div className={feedConnected ? "text-buy" : "text-sell"}>{feedConnected ? "Feed live" : "Feed pending"}</div>
+          <div className="mt-1">{messageCount.toLocaleString()} messages</div>
+        </div>
+      </div>
+
+      <section className="grid gap-3 md:grid-cols-4">
+        <Metric label="Current PnL" value={`$${fmtPrice(pnlValue)}`} detail={`${experiment?.pnl.closed_trade_count ?? 0} closed trades`} valueClassName={pnlClass} />
+        <Metric label="Decision" value={decision} detail={reason} />
+        <Metric label="Position" value={fmtPrice(toNumber(position?.quantity))} detail={`UPnL $${fmtPrice(toNumber(position?.unrealized_pnl))}`} />
+        <Metric label="Account PnL" value={`$${fmtPrice(toNumber(pnl?.equity_pnl))}`} detail={`Blended history · PF ${fmtPrice(toNumber(pnl?.profit_factor))}`} />
+      </section>
+
+      <section className="mt-3 grid gap-3 md:grid-cols-4">
+        <Metric label="Expectancy" value={`$${fmtPrice(toNumber(experiment?.scorecard?.expectancy_per_trade))}`} detail={`${experiment?.pnl.winning_trade_count ?? 0}W / ${experiment?.pnl.losing_trade_count ?? 0}L`} />
+        <Metric label="Profit Factor" value={fmtPrice(toNumber(experiment?.pnl.profit_factor))} detail={`${fmtPrice(toNumber(experiment?.scorecard?.fee_drag_pct))}% fee drag`} />
+        <Metric label="Entry Filter" value={`${fmtPrice(toNumber(automation?.config.min_expected_move_bps))} bps`} detail={`Vol ${fmtPrice(toNumber(automation?.config.min_volume_ratio))}x`} />
+        <Metric label="Risk Limits" value={`$${fmtPrice(toNumber(automation?.config.daily_max_loss))}`} detail={`${automation?.config.max_trades_per_day ?? "—"} trades/day`} />
+      </section>
+    </section>
+  );
+}
+
+function ManualOrderPanel({
+  config,
+  symbols,
+  symbol,
+  side,
+  quantity,
+  positionQuantity,
+  submitting,
+  onSymbolChange,
+  onSideChange,
+  onQuantityChange,
+  onSubmit,
+  onReset
+}: {
+  config: SimulationConfig | null;
+  symbols: string[];
+  symbol: string;
+  side: "buy" | "sell";
+  quantity: string;
+  positionQuantity: string;
+  submitting: boolean;
+  onSymbolChange: (value: string) => void;
+  onSideChange: (value: "buy" | "sell") => void;
+  onQuantityChange: (value: string) => void;
+  onSubmit: () => void;
+  onReset: () => void;
+}) {
+  return (
+    <section className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+      <section className="rounded-lg border border-line bg-panel/90 p-4">
+        <div className="mb-3 flex items-center gap-2">
+          <SlidersHorizontal className="h-4 w-4 text-gold" aria-hidden />
+          <h2 className="text-sm font-semibold text-ink">Paper Order Ticket</h2>
+        </div>
+        <div className="mb-4 space-y-3 text-sm">
+          <Row label="Price source" value={config?.fill_model.price_source ?? "—"} />
+          <Row label="Fee" value={`${config?.fill_model.fee_bps ?? "—"} bps`} />
+          <Row label="Slippage" value={`${config?.fill_model.slippage_bps ?? "—"} bps`} />
+          <Row label="Latency" value={`${config?.fill_model.latency_ms ?? "—"} ms`} />
+          <Row label="Position" value={positionQuantity} />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {symbols.map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => onSymbolChange(item)}
+              className={`h-9 rounded-lg border px-3 text-sm ${
+                symbol === item ? "border-gold/50 bg-gold/20 text-white" : "border-white/10 bg-white/[0.05] text-muted hover:text-white"
+              }`}
+            >
+              {item}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-line bg-panel/90 p-4">
+        <div className="grid grid-cols-2 gap-2">
+          {(["buy", "sell"] as const).map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => onSideChange(item)}
+              className={`h-10 rounded-lg border text-sm font-medium capitalize ${
+                side === item
+                  ? item === "buy"
+                    ? "border-buy/50 bg-buy/20 text-white"
+                    : "border-sell/50 bg-sell/20 text-white"
+                  : "border-white/10 bg-white/[0.05] text-muted hover:text-white"
+              }`}
+            >
+              {item}
+            </button>
+          ))}
+        </div>
+        <label className="mt-4 block text-xs text-muted">
+          Quantity
+          <input
+            value={quantity}
+            onChange={(event) => onQuantityChange(event.target.value)}
+            className="mt-2 h-10 w-full rounded-lg border border-white/10 bg-black/30 px-3 text-sm text-white outline-none focus:border-gold/50"
+            inputMode="decimal"
+          />
+        </label>
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={onSubmit}
+            disabled={submitting}
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-gold/40 bg-gold/20 px-3 text-sm font-medium text-white hover:bg-gold/25 disabled:opacity-50"
+          >
+            <Send className="h-4 w-4" aria-hidden />
+            Submit
+          </button>
+          <button
+            type="button"
+            onClick={onReset}
+            disabled={submitting}
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-3 text-sm text-muted hover:text-white disabled:opacity-50"
+          >
+            <RotateCcw className="h-4 w-4" aria-hidden />
+            Reset
+          </button>
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function MarketCandles({ candles }: { candles: SimulationCandle[] }) {
+  return (
+    <section className="rounded-lg border border-line bg-panel/90 p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <Database className="h-4 w-4 text-accent" aria-hidden />
+        <h2 className="text-sm font-semibold text-ink">Recent Candles</h2>
+      </div>
+      <div className="grid grid-cols-[1fr_1fr_1fr_1fr_1fr] border-b border-line pb-2 text-xs text-muted">
+        <span>Time</span>
+        <span className="text-right">Open</span>
+        <span className="text-right">High</span>
+        <span className="text-right">Low</span>
+        <span className="text-right">Close</span>
+      </div>
+      {candles.map((candle) => (
+        <div key={`${candle.symbol}-${candle.interval}-${candle.open_time}`} className="grid grid-cols-[1fr_1fr_1fr_1fr_1fr] border-b border-white/[0.06] py-2 text-sm tabular-nums">
+          <span className="text-muted">{new Date(candle.open_time).toLocaleTimeString()}</span>
+          <span className="text-right">{fmtPrice(toNumber(candle.open))}</span>
+          <span className="text-right text-buy">{fmtPrice(toNumber(candle.high))}</span>
+          <span className="text-right text-sell">{fmtPrice(toNumber(candle.low))}</span>
+          <span className="text-right text-white">{fmtPrice(toNumber(candle.close))}</span>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function MarketTrades({ trades }: { trades: SimulationTrade[] }) {
+  return (
+    <section className="rounded-lg border border-line bg-panel/90 p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <Database className="h-4 w-4 text-accent" aria-hidden />
+        <h2 className="text-sm font-semibold text-ink">Recent Trades</h2>
+      </div>
+      <div className="grid grid-cols-[1fr_1fr_1fr] border-b border-line pb-2 text-xs text-muted">
+        <span>Time</span>
+        <span className="text-right">Price</span>
+        <span className="text-right">Qty</span>
+      </div>
+      {trades.map((trade) => (
+        <div key={`${trade.exchange}-${trade.symbol}-${trade.trade_id}`} className="grid grid-cols-[1fr_1fr_1fr] border-b border-white/[0.06] py-2 text-sm tabular-nums">
+          <span className="text-muted">{new Date(trade.trade_time).toLocaleTimeString()}</span>
+          <span className="text-right text-white">{fmtPrice(toNumber(trade.price))}</span>
+          <span className="text-right text-muted">{fmtPrice(toNumber(trade.quantity))}</span>
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -622,10 +757,10 @@ function PaperPositions({ positions }: { positions: NonNullable<SimulationPortfo
   );
 }
 
-function PaperOrders({ orders }: { orders: SimulationOrder[] }) {
+function PaperOrders({ orders, title = "Orders" }: { orders: SimulationOrder[]; title?: string }) {
   return (
     <section className="rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
-      <h2 className="mb-3 text-sm font-semibold text-ink">Orders</h2>
+      <h2 className="mb-3 text-sm font-semibold text-ink">{title}</h2>
       <div className="grid grid-cols-[60px_1fr_1fr_1fr] border-b border-line pb-2 text-xs text-muted">
         <span>Side</span>
         <span>Symbol</span>
@@ -648,10 +783,10 @@ function PaperOrders({ orders }: { orders: SimulationOrder[] }) {
   );
 }
 
-function PaperFills({ fills }: { fills: SimulationFill[] }) {
+function PaperFills({ fills, title = "Fills" }: { fills: SimulationFill[]; title?: string }) {
   return (
     <section className="rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
-      <h2 className="mb-3 text-sm font-semibold text-ink">Fills</h2>
+      <h2 className="mb-3 text-sm font-semibold text-ink">{title}</h2>
       <div className="grid grid-cols-[60px_1fr_1fr_1fr] border-b border-line pb-2 text-xs text-muted">
         <span>Side</span>
         <span>Symbol</span>
@@ -1143,11 +1278,38 @@ function BacktestInput({
   );
 }
 
-function Metric({ label, value, detail }: { label: string; value: string; detail: string }) {
+function CollapsibleSection({
+  title,
+  defaultOpen,
+  children
+}: {
+  title: string;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <details className="mt-5 rounded-lg border border-line bg-panel/70 p-4 shadow-2xl" open={defaultOpen}>
+      <summary className="cursor-pointer select-none text-sm font-semibold text-ink">{title}</summary>
+      <div className="mt-4">{children}</div>
+    </details>
+  );
+}
+
+function Metric({
+  label,
+  value,
+  detail,
+  valueClassName = "text-white"
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  valueClassName?: string;
+}) {
   return (
     <section className="rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
       <div className="text-xs uppercase text-muted">{label}</div>
-      <div className="mt-3 text-xl font-semibold tabular-nums text-white">{value}</div>
+      <div className={`mt-3 text-xl font-semibold tabular-nums ${valueClassName}`}>{value}</div>
       <div className="mt-2 text-xs text-muted">{detail}</div>
     </section>
   );
