@@ -212,7 +212,14 @@ export default function DashboardPage() {
             </div>
           </header>
 
-          <section className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <section aria-label="Workspace navigation" className="mb-5 rounded-lg border border-white/10 bg-white/[0.04] p-3">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-white">Workspace</h2>
+                <p className="mt-0.5 text-xs text-muted">Jump between live markets, analytics, and simulation.</p>
+              </div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
             {PRIMARY_LINKS.map((item) => {
               const Icon = item.icon;
               const content = (
@@ -230,11 +237,11 @@ export default function DashboardPage() {
                   </div>
                 </>
               );
-              const className = `flex min-h-[72px] items-center gap-3 rounded-lg border p-3 text-left transition ${
+              const className = `flex min-h-[78px] items-center gap-3 rounded-lg border p-3 text-left transition ${
                 item.active
-                  ? "border-accent/40 bg-accent/10"
+                  ? "border-accent/60 bg-accent/15 shadow-[0_0_24px_rgba(91,231,255,0.08)]"
                   : item.href
-                    ? "border-line bg-panel/90 hover:border-white/20 hover:bg-white/[0.06]"
+                    ? "border-white/10 bg-panel/95 hover:border-white/25 hover:bg-white/[0.07]"
                     : "border-line bg-panel/60 opacity-60"
               }`;
               return item.href ? (
@@ -247,6 +254,7 @@ export default function DashboardPage() {
                 </button>
               );
             })}
+            </div>
           </section>
 
           <section className="mb-5 grid gap-3 md:grid-cols-3 xl:grid-cols-[1fr_1fr_1fr_180px]">
