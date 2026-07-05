@@ -25,6 +25,13 @@ import { BookTopEvent, CandleEvent, CandleInterval, HealthEvent, MarketMessage, 
 
 const SYMBOLS: SymbolName[] = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
 const CANDLE_INTERVALS: CandleInterval[] = ["1m", "5m", "15m", "1h"];
+const PRIMARY_LINKS = [
+  { label: "Dashboard", href: "/", icon: LayoutDashboard, active: true },
+  { label: "Analytics", href: "/analytics", icon: Activity },
+  { label: "Simulation", href: "/simulation", icon: PlaySquare },
+  { label: "Research", href: null, icon: BookOpen },
+  { label: "Portfolio", href: null, icon: WalletCards }
+];
 
 type CandlesBySymbol = Partial<Record<SymbolName, Partial<Record<CandleInterval, CandleEvent[]>>>>;
 
@@ -150,39 +157,27 @@ export default function DashboardPage() {
             </div>
           </div>
           <nav className="space-y-2 text-sm">
-            <Link
-              href="/"
-              className="flex h-10 w-full items-center gap-3 rounded-lg border border-white/10 bg-white/10 px-3 text-left text-white"
-            >
-              <LayoutDashboard className="h-4 w-4" aria-hidden />
-              Dashboard
-            </Link>
-            <Link
-              href="/analytics"
-              className="flex h-10 w-full items-center gap-3 rounded-lg px-3 text-left text-muted hover:bg-white/5 hover:text-white"
-            >
-              <Activity className="h-4 w-4" aria-hidden />
-              Analytics
-            </Link>
-            <Link
-              href="/simulation"
-              className="flex h-10 w-full items-center gap-3 rounded-lg px-3 text-left text-muted hover:bg-white/5 hover:text-white"
-            >
-              <PlaySquare className="h-4 w-4" aria-hidden />
-              Simulation
-            </Link>
-            {[
-              ["Research", BookOpen],
-              ["Portfolio", WalletCards]
-            ].map(([label, Icon]) => (
-              <button
-                key={label as string}
-                className="flex h-10 w-full items-center gap-3 rounded-lg px-3 text-left text-muted hover:bg-white/5 hover:text-white"
-              >
-                <Icon className="h-4 w-4" aria-hidden />
-                {label as string}
-              </button>
-            ))}
+            {PRIMARY_LINKS.map((item) => {
+              const Icon = item.icon;
+              const className = `flex h-10 w-full items-center gap-3 rounded-lg px-3 text-left ${
+                item.active
+                  ? "border border-white/10 bg-white/10 text-white"
+                  : item.href
+                    ? "text-muted hover:bg-white/5 hover:text-white"
+                    : "cursor-not-allowed text-muted/50"
+              }`;
+              return item.href ? (
+                <Link key={item.label} href={item.href} className={className}>
+                  <Icon className="h-4 w-4" aria-hidden />
+                  {item.label}
+                </Link>
+              ) : (
+                <button key={item.label} type="button" disabled className={className}>
+                  <Icon className="h-4 w-4" aria-hidden />
+                  {item.label}
+                </button>
+              );
+            })}
           </nav>
           <div className="mt-8 rounded-lg border border-white/10 bg-white/[0.04] p-3">
             <div className="flex items-center gap-2 text-xs text-muted">
@@ -216,6 +211,43 @@ export default function DashboardPage() {
               </button>
             </div>
           </header>
+
+          <section className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            {PRIMARY_LINKS.map((item) => {
+              const Icon = item.icon;
+              const content = (
+                <>
+                  <div className={`grid h-10 w-10 place-items-center rounded-lg ${
+                    item.active ? "bg-accent text-black" : "bg-white/[0.06] text-muted"
+                  }`}>
+                    <Icon className="h-5 w-5" aria-hidden />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="font-medium text-white">{item.label}</div>
+                    <div className="mt-1 text-xs text-muted">
+                      {item.active ? "Current view" : item.href ? "Open section" : "Coming soon"}
+                    </div>
+                  </div>
+                </>
+              );
+              const className = `flex min-h-[72px] items-center gap-3 rounded-lg border p-3 text-left transition ${
+                item.active
+                  ? "border-accent/40 bg-accent/10"
+                  : item.href
+                    ? "border-line bg-panel/90 hover:border-white/20 hover:bg-white/[0.06]"
+                    : "border-line bg-panel/60 opacity-60"
+              }`;
+              return item.href ? (
+                <Link key={item.label} href={item.href} className={className}>
+                  {content}
+                </Link>
+              ) : (
+                <button key={item.label} type="button" disabled className={className}>
+                  {content}
+                </button>
+              );
+            })}
+          </section>
 
           <section className="mb-5 grid gap-3 md:grid-cols-3 xl:grid-cols-[1fr_1fr_1fr_180px]">
             {SYMBOLS.map((symbol) => (
