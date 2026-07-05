@@ -172,9 +172,6 @@ export default function SimulationPage() {
     };
   }, []);
 
-  const selectedBook = snapshot?.books[symbol];
-  const latestCandle = candles.at(-1);
-  const latestTrade = trades.at(-1);
   const selectedPosition = portfolio?.positions.find((position) => position.symbol === symbol);
   const totalMessages = useMemo(
     () => Object.values(snapshot?.health.message_counts ?? {}).reduce((sum, value) => sum + value, 0),
@@ -388,15 +385,15 @@ export default function SimulationPage() {
   }
 
   return (
-    <main className="min-h-screen p-3 text-ink sm:p-5">
-      <div className="mx-auto min-h-[calc(100vh-2.5rem)] max-w-[1500px] overflow-hidden rounded-[28px] border border-white/15 bg-black/35 shadow-[0_24px_90px_rgba(0,0,0,0.55)] backdrop-blur-xl">
-        <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 p-5">
+    <main className="min-h-screen p-2 text-ink sm:p-5">
+      <div className="mx-auto min-h-[calc(100vh-1rem)] max-w-[1500px] overflow-hidden rounded-2xl border border-white/15 bg-black/35 shadow-[0_24px_90px_rgba(0,0,0,0.55)] backdrop-blur-xl sm:min-h-[calc(100vh-2.5rem)] sm:rounded-[28px]">
+        <header className="flex flex-col items-start justify-between gap-3 border-b border-white/10 p-4 sm:flex-row sm:items-center sm:p-5">
           <div className="flex items-center gap-3">
             <div className="grid h-10 w-10 place-items-center rounded-lg bg-gold text-black">
               <PlaySquare className="h-5 w-5" aria-hidden />
             </div>
             <div>
-              <h1 className="text-2xl font-semibold text-white">Paper Simulation</h1>
+              <h1 className="text-xl font-semibold text-white sm:text-2xl">Paper Simulation</h1>
               <div className="mt-1 flex items-center gap-2 text-sm text-muted">
                 <ShieldCheck className="h-4 w-4 text-buy" aria-hidden />
                 Live simulated execution only
@@ -405,14 +402,14 @@ export default function SimulationPage() {
           </div>
           <Link
             href="/"
-            className="inline-flex h-10 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.06] px-3 text-sm text-muted hover:text-white"
+            className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.06] px-3 text-sm text-muted hover:text-white sm:w-auto"
           >
             <ChevronLeft className="h-4 w-4" aria-hidden />
             Dashboard
           </Link>
         </header>
 
-        <section className="p-4 sm:p-5 lg:p-6">
+        <section className="p-3 sm:p-5 lg:p-6">
           {error ? (
             <section className="mb-4 rounded-lg border border-sell/30 bg-sell/10 p-4 text-sm text-sell">
               Simulation API unavailable: {error}
@@ -735,7 +732,7 @@ function PaperPositions({ positions }: { positions: NonNullable<SimulationPortfo
   return (
     <section className="rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
       <h2 className="mb-3 text-sm font-semibold text-ink">Positions</h2>
-      <div className="grid grid-cols-[1fr_1fr_1fr_1fr] border-b border-line pb-2 text-xs text-muted">
+      <div className="hidden grid-cols-[1fr_1fr_1fr_1fr] border-b border-line pb-2 text-xs text-muted sm:grid">
         <span>Symbol</span>
         <span className="text-right">Qty</span>
         <span className="text-right">Avg</span>
@@ -743,11 +740,11 @@ function PaperPositions({ positions }: { positions: NonNullable<SimulationPortfo
       </div>
       {positions.length ? (
         positions.map((position) => (
-          <div key={position.symbol} className="grid grid-cols-[1fr_1fr_1fr_1fr] border-b border-white/[0.06] py-2 text-sm tabular-nums">
-            <span className="font-medium text-white">{position.symbol}</span>
-            <span className="text-right">{fmtPrice(toNumber(position.quantity))}</span>
-            <span className="text-right">{fmtPrice(toNumber(position.avg_entry_price))}</span>
-            <span className="text-right text-buy">{fmtPrice(toNumber(position.unrealized_pnl))}</span>
+          <div key={position.symbol} className="border-b border-white/[0.06] py-3 text-sm tabular-nums sm:grid sm:grid-cols-[1fr_1fr_1fr_1fr] sm:py-2">
+            <div className="mb-2 font-medium text-white sm:mb-0">{position.symbol}</div>
+            <MobileField label="Qty" value={fmtPrice(toNumber(position.quantity))} />
+            <MobileField label="Avg" value={fmtPrice(toNumber(position.avg_entry_price))} />
+            <MobileField label="UPnL" value={fmtPrice(toNumber(position.unrealized_pnl))} valueClassName="text-buy" />
           </div>
         ))
       ) : (
@@ -761,7 +758,7 @@ function PaperOrders({ orders, title = "Orders" }: { orders: SimulationOrder[]; 
   return (
     <section className="rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
       <h2 className="mb-3 text-sm font-semibold text-ink">{title}</h2>
-      <div className="grid grid-cols-[60px_1fr_1fr_1fr] border-b border-line pb-2 text-xs text-muted">
+      <div className="hidden grid-cols-[60px_1fr_1fr_1fr] border-b border-line pb-2 text-xs text-muted sm:grid">
         <span>Side</span>
         <span>Symbol</span>
         <span className="text-right">Status</span>
@@ -769,11 +766,14 @@ function PaperOrders({ orders, title = "Orders" }: { orders: SimulationOrder[]; 
       </div>
       {orders.length ? (
         orders.slice(0, 10).map((order) => (
-          <div key={order.id} className="grid grid-cols-[60px_1fr_1fr_1fr] border-b border-white/[0.06] py-2 text-sm tabular-nums">
-            <span className={order.side === "buy" ? "text-buy" : "text-sell"}>{order.side}</span>
-            <span className="font-medium text-white">{order.symbol}</span>
-            <span className="text-right text-muted">{order.status}</span>
-            <span className="text-right">{fmtPrice(toNumber(order.fill_price))}</span>
+          <div key={order.id} className="border-b border-white/[0.06] py-3 text-sm tabular-nums sm:grid sm:grid-cols-[60px_1fr_1fr_1fr] sm:py-2">
+            <div className="mb-2 flex items-center justify-between sm:mb-0 sm:block">
+              <span className={order.side === "buy" ? "text-buy" : "text-sell"}>{order.side}</span>
+              <span className="font-medium text-white sm:hidden">{order.symbol}</span>
+            </div>
+            <span className="hidden font-medium text-white sm:block">{order.symbol}</span>
+            <MobileField label="Status" value={order.status} valueClassName="text-muted" />
+            <MobileField label="Fill" value={fmtPrice(toNumber(order.fill_price))} />
           </div>
         ))
       ) : (
@@ -787,7 +787,7 @@ function PaperFills({ fills, title = "Fills" }: { fills: SimulationFill[]; title
   return (
     <section className="rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
       <h2 className="mb-3 text-sm font-semibold text-ink">{title}</h2>
-      <div className="grid grid-cols-[60px_1fr_1fr_1fr] border-b border-line pb-2 text-xs text-muted">
+      <div className="hidden grid-cols-[60px_1fr_1fr_1fr] border-b border-line pb-2 text-xs text-muted sm:grid">
         <span>Side</span>
         <span>Symbol</span>
         <span className="text-right">Price</span>
@@ -795,11 +795,14 @@ function PaperFills({ fills, title = "Fills" }: { fills: SimulationFill[]; title
       </div>
       {fills.length ? (
         fills.slice(0, 10).map((fill) => (
-          <div key={fill.id} className="grid grid-cols-[60px_1fr_1fr_1fr] border-b border-white/[0.06] py-2 text-sm tabular-nums">
-            <span className={fill.side === "buy" ? "text-buy" : "text-sell"}>{fill.side}</span>
-            <span className="font-medium text-white">{fill.symbol}</span>
-            <span className="text-right text-white">{fmtPrice(toNumber(fill.price))}</span>
-            <span className="text-right text-muted">{fmtPrice(toNumber(fill.quantity))}</span>
+          <div key={fill.id} className="border-b border-white/[0.06] py-3 text-sm tabular-nums sm:grid sm:grid-cols-[60px_1fr_1fr_1fr] sm:py-2">
+            <div className="mb-2 flex items-center justify-between sm:mb-0 sm:block">
+              <span className={fill.side === "buy" ? "text-buy" : "text-sell"}>{fill.side}</span>
+              <span className="font-medium text-white sm:hidden">{fill.symbol}</span>
+            </div>
+            <span className="hidden font-medium text-white sm:block">{fill.symbol}</span>
+            <MobileField label="Price" value={fmtPrice(toNumber(fill.price))} valueClassName="text-white" />
+            <MobileField label="Qty" value={fmtPrice(toNumber(fill.quantity))} valueClassName="text-muted" />
           </div>
         ))
       ) : (
@@ -910,8 +913,8 @@ function AutomationPanel({
         />
       </section>
 
-      <section className="overflow-hidden rounded-lg border border-white/[0.08]">
-        <div className="grid grid-cols-[80px_1fr_1fr_1fr_1fr] border-b border-line bg-white/[0.03] px-3 py-2 text-xs text-muted">
+      <section className="rounded-lg border border-white/[0.08]">
+        <div className="hidden grid-cols-[80px_1fr_1fr_1fr_1fr] border-b border-line bg-white/[0.03] px-3 py-2 text-xs text-muted md:grid">
           <span>Signal</span>
           <span>Strategy</span>
           <span className="text-right">Status</span>
@@ -921,15 +924,18 @@ function AutomationPanel({
         {signals.map((signal) => (
           <div
             key={signal.id}
-            className="grid grid-cols-[80px_1fr_1fr_1fr_1fr] border-b border-white/[0.06] px-3 py-2 text-sm tabular-nums"
+            className="border-b border-white/[0.06] p-3 text-sm tabular-nums md:grid md:grid-cols-[80px_1fr_1fr_1fr_1fr] md:px-3 md:py-2"
           >
-            <span className={signal.signal === "buy" ? "text-buy" : signal.signal === "sell" ? "text-sell" : "text-muted"}>
-              {signal.signal}
-            </span>
+            <div className="mb-2 flex items-center justify-between md:mb-0 md:block">
+              <span className={signal.signal === "buy" ? "text-buy" : signal.signal === "sell" ? "text-sell" : "text-muted"}>
+                {signal.signal}
+              </span>
+              <span className="text-xs text-muted md:hidden">{new Date(signal.created_at).toLocaleTimeString()}</span>
+            </div>
             <span className="font-medium text-white">{signal.strategy}</span>
-            <span className="text-right text-muted">{signal.status}</span>
-            <span className="truncate text-right text-muted">{signal.reason ?? "—"}</span>
-            <span className="text-right text-muted">{new Date(signal.created_at).toLocaleTimeString()}</span>
+            <MobileField label="Status" value={signal.status} valueClassName="text-muted" desktopAt="md" />
+            <MobileField label="Reason" value={signal.reason ?? "—"} valueClassName="max-w-full truncate text-muted" desktopAt="md" />
+            <span className="hidden text-right text-muted md:block">{new Date(signal.created_at).toLocaleTimeString()}</span>
           </div>
         ))}
         {!signals.length ? <div className="px-3 py-4 text-sm text-muted">No automated signals yet.</div> : null}
@@ -953,6 +959,35 @@ function toMetricText(value: unknown, fallback: string) {
   return typeof value === "string" && value.length > 0 ? value : fallback;
 }
 
+function MobileField({
+  label,
+  value,
+  valueClassName = "text-white",
+  desktopAt = "sm"
+}: {
+  label: string;
+  value: string;
+  valueClassName?: string;
+  desktopAt?: "sm" | "md" | "lg";
+}) {
+  const layoutClass = {
+    sm: "flex items-center justify-between gap-3 py-1 sm:block sm:py-0 sm:text-right",
+    md: "flex items-center justify-between gap-3 py-1 md:block md:py-0 md:text-right",
+    lg: "flex items-center justify-between gap-3 py-1 lg:block lg:py-0 lg:text-right"
+  }[desktopAt];
+  const labelClass = {
+    sm: "text-xs text-muted sm:hidden",
+    md: "text-xs text-muted md:hidden",
+    lg: "text-xs text-muted lg:hidden"
+  }[desktopAt];
+  return (
+    <div className={layoutClass}>
+      <span className={labelClass}>{label}</span>
+      <span className={valueClassName}>{value}</span>
+    </div>
+  );
+}
+
 function ExperimentPanel({ experiments }: { experiments: SimulationExperiment[] }) {
   return (
     <section className="mt-5 rounded-lg border border-line bg-panel/90 p-4 shadow-2xl">
@@ -966,8 +1001,8 @@ function ExperimentPanel({ experiments }: { experiments: SimulationExperiment[] 
         </div>
       </div>
 
-      <section className="overflow-hidden rounded-lg border border-white/[0.08]">
-        <div className="grid grid-cols-[70px_1fr_80px_90px_1fr_1fr_1fr_1fr_1fr] border-b border-line bg-white/[0.03] px-3 py-2 text-xs text-muted">
+      <section className="rounded-lg border border-white/[0.08]">
+        <div className="hidden grid-cols-[70px_1fr_80px_90px_1fr_1fr_1fr_1fr_1fr] border-b border-line bg-white/[0.03] px-3 py-2 text-xs text-muted lg:grid">
           <span>ID</span>
           <span>Strategy</span>
           <span>Frame</span>
@@ -981,26 +1016,53 @@ function ExperimentPanel({ experiments }: { experiments: SimulationExperiment[] 
         {experiments.map((experiment) => (
           <div
             key={experiment.id}
-            className="grid grid-cols-[70px_1fr_80px_90px_1fr_1fr_1fr_1fr_1fr] border-b border-white/[0.06] px-3 py-2 text-sm tabular-nums"
+            className="border-b border-white/[0.06] p-3 text-sm tabular-nums lg:grid lg:grid-cols-[70px_1fr_80px_90px_1fr_1fr_1fr_1fr_1fr] lg:px-3 lg:py-2"
           >
-            <span className="text-gold">#{experiment.id}</span>
-            <span className="font-medium text-white">{experiment.strategy}</span>
-            <span className="text-muted">{experiment.interval}</span>
-            <span className={experiment.status === "running" ? "text-buy" : "text-muted"}>{experiment.status}</span>
-            <span className="text-right text-white">${fmtPrice(toNumber(experiment.pnl.net_realized_pnl))}</span>
-            <span className="text-right text-muted">${fmtPrice(toNumber(experiment.scorecard?.expectancy_per_trade))}</span>
-            <span className="text-right text-muted">
-              {experiment.pnl.closed_trade_count} ({experiment.pnl.winning_trade_count}W/{experiment.pnl.losing_trade_count}L)
-            </span>
-            <span className="text-right text-muted">
-              {fmtPrice(toNumber(experiment.pnl.profit_factor))}
-              <span className="ml-1 text-[11px] text-muted/70">
-                / {fmtPrice(toNumber(experiment.scorecard?.fee_drag_pct))}% fee
+            <div className="lg:hidden">
+              <div className="mb-3 flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-gold">#{experiment.id}</div>
+                  <div className="mt-1 font-medium text-white">{experiment.strategy}</div>
+                </div>
+                <div className={experiment.status === "running" ? "text-buy" : "text-muted"}>{experiment.status}</div>
+              </div>
+              <MobileField label="Frame" value={experiment.interval} valueClassName="text-muted" desktopAt="lg" />
+              <MobileField label="Net PnL" value={`$${fmtPrice(toNumber(experiment.pnl.net_realized_pnl))}`} desktopAt="lg" />
+              <MobileField label="Expectancy" value={`$${fmtPrice(toNumber(experiment.scorecard?.expectancy_per_trade))}`} valueClassName="text-muted" desktopAt="lg" />
+              <MobileField
+                label="Trades"
+                value={`${experiment.pnl.closed_trade_count} (${experiment.pnl.winning_trade_count}W/${experiment.pnl.losing_trade_count}L)`}
+                valueClassName="text-muted"
+                desktopAt="lg"
+              />
+              <MobileField
+                label="PF"
+                value={`${fmtPrice(toNumber(experiment.pnl.profit_factor))} / ${fmtPrice(toNumber(experiment.scorecard?.fee_drag_pct))}% fee`}
+                valueClassName="text-muted"
+                desktopAt="lg"
+              />
+              <MobileField label="Verdict" value={experiment.validation.status} valueClassName="text-muted" desktopAt="lg" />
+            </div>
+            <div className="hidden lg:contents">
+              <span className="text-gold">#{experiment.id}</span>
+              <span className="font-medium text-white">{experiment.strategy}</span>
+              <span className="text-muted">{experiment.interval}</span>
+              <span className={experiment.status === "running" ? "text-buy" : "text-muted"}>{experiment.status}</span>
+              <span className="text-right text-white">${fmtPrice(toNumber(experiment.pnl.net_realized_pnl))}</span>
+              <span className="text-right text-muted">${fmtPrice(toNumber(experiment.scorecard?.expectancy_per_trade))}</span>
+              <span className="text-right text-muted">
+                {experiment.pnl.closed_trade_count} ({experiment.pnl.winning_trade_count}W/{experiment.pnl.losing_trade_count}L)
               </span>
-            </span>
-            <span className="truncate text-right text-muted" title={experiment.validation.reason}>
-              {experiment.validation.status}
-            </span>
+              <div className="text-right text-muted">
+                {fmtPrice(toNumber(experiment.pnl.profit_factor))}
+                <span className="ml-1 text-[11px] text-muted/70">
+                  / {fmtPrice(toNumber(experiment.scorecard?.fee_drag_pct))}% fee
+                </span>
+              </div>
+              <span className="truncate text-right text-muted" title={experiment.validation.reason}>
+                {experiment.validation.status}
+              </span>
+            </div>
           </div>
         ))}
         {!experiments.length ? (
