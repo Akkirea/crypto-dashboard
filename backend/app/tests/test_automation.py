@@ -144,3 +144,38 @@ async def test_position_manager_stop_loss_overrides_hold_signal() -> None:
     assert signal == "sell"
     assert reason == "stop_loss_triggered"
     assert metrics["position_manager"]["exit_type"] == "hard_stop"
+
+
+@pytest.mark.asyncio
+async def test_position_manager_take_profit_exits_immediately() -> None:
+    worker = AutomatedSimulationWorker(MarketState(["AAAUSDT"]), db=None)  # type: ignore[arg-type]
+    config = AutomationConfig(
+        portfolio_id="default",
+        symbol="AAAUSDT",
+        take_profit_bps=Decimal("75"),
+        max_holding_minutes=Decimal("60"),
+        max_spread_bps=Decimal("10"),
+    )
+    worker._position_state["default:binance:AAAUSDT"] = {
+        "entry_time": datetime.now(timezone.utc) - timedelta(minutes=10),
+        "highest_price": Decimal("101"),
+        "last_trade_time": None,
+    }
+
+    signal, reason, metrics = await worker._apply_position_manager(
+        config=config,
+        raw_signal="hold",
+        raw_reason="no_momentum_breakout_action",
+        metrics={"close": "100.80"},
+        position={
+            "quantity": Decimal("1"),
+            "avg_entry_price": Decimal("100"),
+            "mark_price": Decimal("100.80"),
+        },
+        book={"bid_price": Decimal("100.79"), "ask_price": Decimal("100.81")},
+    )
+
+    assert signal == "sell"
+    assert reason == "take_profit_reached"
+    assert metrics["position_manager"]["exit_type"] == "take_profit"
+    assert Decimal(metrics["position_manager"]["holding_minutes"]) < config.max_holding_minutes

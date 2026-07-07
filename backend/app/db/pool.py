@@ -1259,6 +1259,27 @@ class Database:
         )
         return _decode_json_fields(dict(row), "parameters") if row else None
 
+    async def update_simulation_experiment_parameters(
+        self,
+        experiment_id: int,
+        parameters: dict[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        if not self.pool:
+            return None
+        row = await self.pool.fetchrow(
+            """
+            UPDATE simulation_experiments
+            SET parameters = $2::jsonb,
+                updated_at = now()
+            WHERE id = $1
+            RETURNING id, portfolio_id, exchange, symbol, interval, strategy, status,
+                      parameters, started_at, ended_at, created_at, updated_at
+            """,
+            experiment_id,
+            json.dumps(parameters, default=_json_default),
+        )
+        return _decode_json_fields(dict(row), "parameters") if row else None
+
     async def stop_running_simulation_experiments(self, *, reason: str = "backend_startup") -> int:
         if not self.pool:
             return 0

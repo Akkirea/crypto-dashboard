@@ -35,7 +35,7 @@ class AutomationConfig:
     min_volume_ratio: Decimal = Decimal("1.20")
     stop_loss_bps: Decimal = Decimal("50")
     trailing_stop_bps: Decimal = Decimal("35")
-    take_profit_bps: Decimal = Decimal("100")
+    take_profit_bps: Decimal = Decimal("75")
     min_holding_minutes: Decimal = Decimal("3")
     max_holding_minutes: Decimal = Decimal("90")
     cooldown_minutes: Decimal = Decimal("5")
@@ -92,6 +92,17 @@ class AutomatedSimulationWorker:
                 raise ValueError("max_position_notional must be positive")
             if config.strategy == "sma_cross" and config.short_window >= config.long_window:
                 raise ValueError("short_window must be lower than long_window")
+            if (
+                self.config.enabled
+                and self.config.experiment_id is not None
+                and config.experiment_id is None
+                and self.config.portfolio_id == config.portfolio_id
+                and self.config.exchange == config.exchange
+                and self.config.symbol == config.symbol
+                and self.config.interval == config.interval
+                and self.config.strategy == config.strategy
+            ):
+                config.experiment_id = self.config.experiment_id
             if config.experiment_id is None:
                 experiment = await self.db.create_simulation_experiment(
                     portfolio_id=config.portfolio_id,
@@ -102,6 +113,11 @@ class AutomatedSimulationWorker:
                     parameters=self._config_payload(config),
                 )
                 config.experiment_id = experiment["id"] if experiment else None
+            elif config.experiment_id is not None:
+                await self.db.update_simulation_experiment_parameters(
+                    config.experiment_id,
+                    self._config_payload(config),
+                )
             config.enabled = True
             self.config = config
             self._last_candle_key = None
@@ -548,9 +564,9 @@ class AutomatedSimulationWorker:
         if holding_minutes >= config.max_holding_minutes:
             metrics["position_manager"] = {**manager, "decision": "sell", "exit_type": "time_stop"}
             return "sell", "max_holding_time_reached", metrics
-        if config.take_profit_bps > 0 and pnl_bps >= config.take_profit_bps and raw_signal != "buy":
+        if config.take_profit_bps > 0 and pnl_bps >= config.take_profit_bps:
             metrics["position_manager"] = {**manager, "decision": "sell", "exit_type": "take_profit"}
-            return "sell", "take_profit_reached_after_edge_decay", metrics
+            return "sell", "take_profit_reached", metrics
 
         if holding_minutes < config.min_holding_minutes:
             remaining = config.min_holding_minutes - holding_minutes

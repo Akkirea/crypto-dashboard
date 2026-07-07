@@ -72,7 +72,7 @@ class AutomationRequest(BaseModel):
     min_volume_ratio: Decimal = Field(default=Decimal("1.20"), ge=0, le=100)
     stop_loss_bps: Decimal = Field(default=Decimal("50"), ge=1, le=5000)
     trailing_stop_bps: Decimal = Field(default=Decimal("35"), ge=1, le=5000)
-    take_profit_bps: Decimal = Field(default=Decimal("100"), ge=0, le=10000)
+    take_profit_bps: Decimal = Field(default=Decimal("75"), ge=0, le=10000)
     min_holding_minutes: Decimal = Field(default=Decimal("3"), ge=0, le=1440)
     max_holding_minutes: Decimal = Field(default=Decimal("90"), ge=1, le=10080)
     cooldown_minutes: Decimal = Field(default=Decimal("5"), ge=0, le=1440)
