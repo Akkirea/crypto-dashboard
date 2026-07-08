@@ -320,11 +320,19 @@ export default function SimulationPage() {
           momentum_window: Number(momentumWindow),
           breakout_bps: Number(breakoutBps),
           exit_window: Number(exitWindow),
+          trend_window: 50,
+          min_trend_bps: 0,
+          atr_window: 14,
+          atr_target_multiplier: 1.2,
+          min_take_profit_bps: 50,
+          max_take_profit_bps: 150,
+          min_close_location: 0.65,
+          min_atr_bps: 10,
           min_expected_move_bps: 35,
-          min_volume_ratio: 1.2,
+          min_volume_ratio: 1.5,
           stop_loss_bps: 50,
           trailing_stop_bps: 35,
-          take_profit_bps: 100,
+          take_profit_bps: 75,
           min_holding_minutes: 3,
           max_holding_minutes: 90,
           cooldown_minutes: 5,
@@ -332,7 +340,8 @@ export default function SimulationPage() {
           daily_max_loss: 25,
           max_trades_per_day: 10,
           max_fee_burn_per_day: 5,
-          pause_after_loss_streak: 3
+          pause_after_loss_streak: 3,
+          profit_only_exits: false
         })
       });
       if (!response.ok) {
@@ -561,8 +570,8 @@ function MonitorPanel({
       <section className="mt-3 grid gap-3 md:grid-cols-4">
         <Metric label="Expectancy" value={`$${fmtPrice(toNumber(experiment?.scorecard?.expectancy_per_trade))}`} detail={`${experiment?.pnl.winning_trade_count ?? 0}W / ${experiment?.pnl.losing_trade_count ?? 0}L`} />
         <Metric label="Profit Factor" value={fmtPrice(toNumber(experiment?.pnl.profit_factor))} detail={`${fmtPrice(toNumber(experiment?.scorecard?.fee_drag_pct))}% fee drag`} />
-        <Metric label="Entry Filter" value={`${fmtPrice(toNumber(automation?.config.min_expected_move_bps))} bps`} detail={`Vol ${fmtPrice(toNumber(automation?.config.min_volume_ratio))}x`} />
-        <Metric label="Risk Limits" value={`$${fmtPrice(toNumber(automation?.config.daily_max_loss))}`} detail={`${automation?.config.max_trades_per_day ?? "—"} trades/day`} />
+        <Metric label="Entry Filter" value={`${fmtPrice(toNumber(automation?.config.min_expected_move_bps))} bps`} detail={`Vol ${fmtPrice(toNumber(automation?.config.min_volume_ratio))}x · Trend ${fmtPrice(toNumber(automation?.config.min_trend_bps))} bps`} />
+        <Metric label="Risk Mode" value={automation?.config.profit_only_exits ? "Profit-only" : "Invalidation"} detail={`${automation?.config.max_trades_per_day ?? "—"} trades/day`} />
       </section>
     </section>
   );
@@ -830,6 +839,7 @@ function AutomationPanel({
   const enabled = status?.automated_simulation_enabled ?? false;
   const config = status?.config;
   const manager = positionManagerPayload(status?.last_signal);
+  const latestPayload = status?.last_signal?.payload;
   const decision = toMetricText(manager?.decision, status?.last_signal?.signal ?? "—");
   const decisionReason = toMetricText(manager?.reason, status?.last_signal?.reason ?? "No decision yet");
 
@@ -875,14 +885,14 @@ function AutomationPanel({
         <Metric label="Strategy" value={config?.strategy ?? "—"} detail={config?.symbol ?? "—"} />
         <Metric label="Notional" value={`$${fmtPrice(toNumber(config?.notional))}`} detail={`Cap $${fmtPrice(toNumber(config?.max_position_notional))}`} />
         <Metric label="Poll" value={`${fmtPrice(toNumber(config?.poll_seconds))}s`} detail={config?.interval ?? "—"} />
-        <Metric label="Entry Filter" value={`${fmtPrice(toNumber(config?.min_expected_move_bps))} bps`} detail={`Vol ${fmtPrice(toNumber(config?.min_volume_ratio))}x`} />
+        <Metric label="Entry Filter" value={`${fmtPrice(toNumber(config?.min_expected_move_bps))} bps`} detail={`Vol ${fmtPrice(toNumber(config?.min_volume_ratio))}x · Close ${fmtPrice(toNumber(config?.min_close_location))}`} />
       </section>
 
       <section className="mb-4 grid gap-3 md:grid-cols-5">
         <Metric label="Decision" value={decision} detail={decisionReason} />
-        <Metric label="UPnL" value={`${fmtPrice(toMetricNumber(manager?.unrealized_pnl_bps))} bps`} detail={`Risk ${fmtPrice(toMetricNumber(manager?.risk_score))}`} />
+        <Metric label="UPnL" value={`${fmtPrice(toMetricNumber(manager?.unrealized_pnl_bps))} bps`} detail={`MAE ${fmtPrice(toMetricNumber(manager?.max_adverse_bps))} / MFE ${fmtPrice(toMetricNumber(manager?.max_favorable_bps))}`} />
         <Metric label="Edge" value={fmtPrice(toMetricNumber(manager?.edge_score))} detail={`Spread ${fmtPrice(toMetricNumber(manager?.spread_bps))} bps`} />
-        <Metric label="Trail" value={`$${fmtPrice(toMetricNumber(manager?.trailing_stop_price))}`} detail={`Stop ${fmtPrice(toNumber(config?.stop_loss_bps))} bps`} />
+        <Metric label="Target" value={`${fmtPrice(toMetricNumber(manager?.target_bps ?? latestPayload?.dynamic_take_profit_bps))} bps`} detail={`ATR ${fmtPrice(toMetricNumber(latestPayload?.atr_bps))} bps`} />
         <Metric
           label="Pacing"
           value={`${fmtPrice(toNumber(config?.cooldown_minutes))}m`}

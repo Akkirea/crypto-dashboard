@@ -68,6 +68,14 @@ class AutomationRequest(BaseModel):
     momentum_window: int = Field(default=20, ge=3, le=500)
     breakout_bps: Decimal = Field(default=Decimal("25"), ge=0, le=1000)
     exit_window: int = Field(default=10, ge=2, le=200)
+    trend_window: int = Field(default=50, ge=5, le=1000)
+    min_trend_bps: Decimal = Field(default=Decimal("0"), ge=-10000, le=10000)
+    atr_window: int = Field(default=14, ge=2, le=500)
+    atr_target_multiplier: Decimal = Field(default=Decimal("1.20"), ge=0, le=20)
+    min_take_profit_bps: Decimal = Field(default=Decimal("50"), ge=0, le=10000)
+    max_take_profit_bps: Decimal = Field(default=Decimal("150"), ge=0, le=10000)
+    min_close_location: Decimal = Field(default=Decimal("0.65"), ge=0, le=1)
+    min_atr_bps: Decimal = Field(default=Decimal("10"), ge=0, le=10000)
     min_expected_move_bps: Decimal = Field(default=Decimal("35"), ge=0, le=10000)
     min_volume_ratio: Decimal = Field(default=Decimal("1.20"), ge=0, le=100)
     stop_loss_bps: Decimal = Field(default=Decimal("50"), ge=1, le=5000)
@@ -201,6 +209,14 @@ async def start_automation(request: Request, payload: AutomationRequest) -> dict
                 momentum_window=payload.momentum_window,
                 breakout_bps=payload.breakout_bps,
                 exit_window=payload.exit_window,
+                trend_window=payload.trend_window,
+                min_trend_bps=payload.min_trend_bps,
+                atr_window=payload.atr_window,
+                atr_target_multiplier=payload.atr_target_multiplier,
+                min_take_profit_bps=payload.min_take_profit_bps,
+                max_take_profit_bps=payload.max_take_profit_bps,
+                min_close_location=payload.min_close_location,
+                min_atr_bps=payload.min_atr_bps,
                 min_expected_move_bps=payload.min_expected_move_bps,
                 min_volume_ratio=payload.min_volume_ratio,
                 stop_loss_bps=payload.stop_loss_bps,

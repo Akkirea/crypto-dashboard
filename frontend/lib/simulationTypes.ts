@@ -227,6 +227,14 @@ export type AutomationStatus = {
     momentum_window: number;
     breakout_bps: string | number;
     exit_window: number;
+    trend_window: number;
+    min_trend_bps: string | number;
+    atr_window: number;
+    atr_target_multiplier: string | number;
+    min_take_profit_bps: string | number;
+    max_take_profit_bps: string | number;
+    min_close_location: string | number;
+    min_atr_bps: string | number;
     min_expected_move_bps: string | number;
     min_volume_ratio: string | number;
     stop_loss_bps: string | number;
@@ -240,6 +248,7 @@ export type AutomationStatus = {
     max_trades_per_day: number;
     max_fee_burn_per_day: string | number;
     pause_after_loss_streak: number;
+    profit_only_exits: boolean;
     experiment_id: number | null;
   };
   last_signal: AutomationSignal | null;

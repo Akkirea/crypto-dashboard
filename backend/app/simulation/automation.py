@@ -31,6 +31,14 @@ class AutomationConfig:
     momentum_window: int = 20
     breakout_bps: Decimal = Decimal("25")
     exit_window: int = 10
+    trend_window: int = 50
+    min_trend_bps: Decimal = Decimal("0")
+    atr_window: int = 14
+    atr_target_multiplier: Decimal = Decimal("1.20")
+    min_take_profit_bps: Decimal = Decimal("50")
+    max_take_profit_bps: Decimal = Decimal("150")
+    min_close_location: Decimal = Decimal("0.65")
+    min_atr_bps: Decimal = Decimal("10")
     min_expected_move_bps: Decimal = Decimal("35")
     min_volume_ratio: Decimal = Decimal("1.20")
     stop_loss_bps: Decimal = Decimal("50")
@@ -44,7 +52,7 @@ class AutomationConfig:
     max_trades_per_day: int = 10
     max_fee_burn_per_day: Decimal = Decimal("5")
     pause_after_loss_streak: int = 3
-    profit_only_exits: bool = True
+    profit_only_exits: bool = False
     experiment_id: Optional[int] = None
 
 
@@ -163,6 +171,12 @@ class AutomatedSimulationWorker:
         payload["notional"] = str(config.notional)
         payload["max_position_notional"] = str(config.max_position_notional)
         payload["breakout_bps"] = str(config.breakout_bps)
+        payload["min_trend_bps"] = str(config.min_trend_bps)
+        payload["atr_target_multiplier"] = str(config.atr_target_multiplier)
+        payload["min_take_profit_bps"] = str(config.min_take_profit_bps)
+        payload["max_take_profit_bps"] = str(config.max_take_profit_bps)
+        payload["min_close_location"] = str(config.min_close_location)
+        payload["min_atr_bps"] = str(config.min_atr_bps)
         payload["min_expected_move_bps"] = str(config.min_expected_move_bps)
         payload["min_volume_ratio"] = str(config.min_volume_ratio)
         payload["stop_loss_bps"] = str(config.stop_loss_bps)
@@ -192,12 +206,18 @@ class AutomatedSimulationWorker:
             breakout_bps=config.breakout_bps,
             exit_window=config.exit_window,
         )
-        lookback = required_lookback(backtest_config)
+        lookback = max(
+            required_lookback(backtest_config),
+            config.trend_window + 1,
+            config.atr_window + 1,
+            config.momentum_window + 1,
+            config.long_window + 1,
+        )
         candles = await self.db.fetch_backtest_candles(
             config.symbol,
             config.interval,
             exchange=config.exchange,
-            limit=max(lookback + 5, 50),
+            limit=max(lookback + 5, 100),
         )
         if len(candles) < lookback + 1:
             return await self._record_signal(
@@ -415,7 +435,7 @@ class AutomatedSimulationWorker:
         state_key = f"{config.portfolio_id}:{config.exchange}:{config.symbol}"
         state = self._position_state.setdefault(
             state_key,
-            {"entry_time": None, "highest_price": None, "last_trade_time": None},
+            {"entry_time": None, "highest_price": None, "lowest_price": None, "last_trade_time": None},
         )
         now = datetime.now(timezone.utc)
         if side == "buy":
@@ -424,9 +444,14 @@ class AutomatedSimulationWorker:
                 Decimal(str(state.get("highest_price") or mark_price)),
                 mark_price,
             )
+            state["lowest_price"] = min(
+                Decimal(str(state.get("lowest_price") or mark_price)),
+                mark_price,
+            )
         else:
             state["entry_time"] = None
             state["highest_price"] = None
+            state["lowest_price"] = None
             state["last_trade_time"] = now
 
     def _compute_signal(
@@ -450,21 +475,41 @@ class AutomatedSimulationWorker:
         prior = candles[-config.momentum_window - 1 : -1]
         prior_high = max(Decimal(str(row["high"])) for row in prior)
         prior_close = Decimal(str(prior[0]["close"]))
+        trend_rows = candles[-config.trend_window - 1 : -1]
+        trend_reference = Decimal(str(trend_rows[0]["close"]))
+        trend_close = Decimal(str(trend_rows[-1]["close"]))
+        trend_bps = ((trend_close - trend_reference) / trend_reference) * Decimal("10000") if trend_reference > 0 else Decimal("0")
         price_change_bps = ((close - prior_close) / prior_close) * Decimal("10000") if prior_close > 0 else Decimal("0")
         recent_volume = Decimal(str(candles[-1].get("volume") or 0))
         average_prior_volume = _mean([Decimal(str(row.get("volume") or 0)) for row in prior])
         volume_ratio = recent_volume / average_prior_volume if average_prior_volume > 0 else Decimal("0")
         exit_rows = candles[-config.exit_window - 1 : -1]
         exit_average = _mean([Decimal(str(row["close"])) for row in exit_rows])
+        candle_high = Decimal(str(candles[-1]["high"]))
+        candle_low = Decimal(str(candles[-1]["low"]))
+        candle_range = candle_high - candle_low
+        close_location = (close - candle_low) / candle_range if candle_range > 0 else Decimal("0.50")
+        atr = _atr(candles, config.atr_window)
+        atr_bps = (atr / close) * Decimal("10000") if close > 0 else Decimal("0")
         breakout_level = prior_high * (Decimal("1") + config.breakout_bps / Decimal("10000"))
+        dynamic_take_profit_bps = min(
+            config.max_take_profit_bps,
+            max(config.min_take_profit_bps, atr_bps * config.atr_target_multiplier),
+        )
         round_trip_cost_bps = _estimated_round_trip_cost_bps()
-        required_move_bps = max(config.min_expected_move_bps, round_trip_cost_bps + Decimal("10"))
+        required_move_bps = max(config.min_expected_move_bps, round_trip_cost_bps + Decimal("10"), atr_bps * Decimal("0.50"))
         metrics = {
             "close": str(close),
             "prior_high": str(prior_high),
             "breakout_level": str(breakout_level),
+            "invalidation_level": str(prior_high),
             "exit_average": str(exit_average),
+            "trend_bps": str(trend_bps),
             "price_change_bps": str(price_change_bps),
+            "atr": str(atr),
+            "atr_bps": str(atr_bps),
+            "dynamic_take_profit_bps": str(dynamic_take_profit_bps),
+            "close_location": str(close_location),
             "recent_volume": str(recent_volume),
             "average_prior_volume": str(average_prior_volume),
             "volume_ratio": str(volume_ratio),
@@ -472,6 +517,12 @@ class AutomatedSimulationWorker:
             "required_move_bps": str(required_move_bps),
         }
         if position_qty <= 0 and close > breakout_level:
+            if trend_bps < config.min_trend_bps:
+                return "hold", "trend_filter_failed", metrics
+            if atr_bps < config.min_atr_bps:
+                return "hold", "volatility_filter_failed", metrics
+            if close_location < config.min_close_location:
+                return "hold", "weak_candle_close_location", metrics
             if price_change_bps < required_move_bps:
                 return "hold", "expected_move_below_cost_threshold", metrics
             if volume_ratio < config.min_volume_ratio:
@@ -543,9 +594,22 @@ class AutomatedSimulationWorker:
 
         avg_entry = Decimal(str(position["avg_entry_price"]))
         state["highest_price"] = max(Decimal(str(state.get("highest_price") or mark_price)), mark_price)
+        state["lowest_price"] = min(Decimal(str(state.get("lowest_price") or mark_price)), mark_price)
         entry_time = state.get("entry_time")
         holding_minutes = _elapsed_minutes(entry_time, now) if isinstance(entry_time, datetime) else Decimal("0")
         pnl_bps = ((mark_price - avg_entry) / avg_entry) * Decimal("10000") if avg_entry > 0 else Decimal("0")
+        max_favorable_bps = (
+            (Decimal(str(state["highest_price"])) - avg_entry) / avg_entry
+        ) * Decimal("10000") if avg_entry > 0 else Decimal("0")
+        max_adverse_bps = (
+            (Decimal(str(state["lowest_price"])) - avg_entry) / avg_entry
+        ) * Decimal("10000") if avg_entry > 0 else Decimal("0")
+        target_bps = Decimal(str(metrics.get("dynamic_take_profit_bps") or config.take_profit_bps))
+        invalidation_level = (
+            Decimal(str(metrics["invalidation_level"]))
+            if metrics.get("invalidation_level") is not None
+            else None
+        )
         trailing_stop_price = Decimal(str(state["highest_price"])) * (
             Decimal("1") - config.trailing_stop_bps / Decimal("10000")
         )
@@ -556,16 +620,30 @@ class AutomatedSimulationWorker:
                 "avg_entry_price": str(avg_entry),
                 "unrealized_pnl_bps": str(pnl_bps),
                 "highest_price": str(state["highest_price"]),
+                "lowest_price": str(state["lowest_price"]),
+                "max_favorable_bps": str(max_favorable_bps),
+                "max_adverse_bps": str(max_adverse_bps),
                 "trailing_stop_price": str(trailing_stop_price),
+                "target_bps": str(target_bps),
                 "holding_minutes": str(holding_minutes),
                 "edge_score": str(edge_score),
                 "risk_score": str(risk_score),
             }
         )
 
-        if config.take_profit_bps > 0 and pnl_bps >= config.take_profit_bps:
+        if target_bps > 0 and pnl_bps >= target_bps:
             metrics["position_manager"] = {**manager, "decision": "sell", "exit_type": "take_profit"}
             return "sell", "take_profit_reached", metrics
+
+        if invalidation_level is not None and mark_price < invalidation_level:
+            if not config.profit_only_exits or pnl_bps > 0:
+                metrics["position_manager"] = {**manager, "decision": "sell", "exit_type": "breakout_invalidation"}
+                return "sell", "breakout_level_lost", metrics
+            manager["profit_only_exits"] = True
+            manager["blocked_exit_reason"] = "breakout_level_lost"
+            manager["reason"] = "holding_until_profitable"
+            metrics["position_manager"] = manager
+            return "hold", "profit_only_exit_blocked_invalidation", metrics
 
         if config.profit_only_exits and pnl_bps <= 0:
             blocked_reason = None
@@ -617,13 +695,14 @@ class AutomatedSimulationWorker:
     ) -> dict[str, Any]:
         state = self._position_state.setdefault(
             state_key,
-            {"entry_time": None, "highest_price": mark_price, "last_trade_time": None},
+            {"entry_time": None, "highest_price": mark_price, "lowest_price": mark_price, "last_trade_time": None},
         )
         if not position:
             if state.get("entry_time") is not None:
                 state["last_trade_time"] = datetime.now(timezone.utc)
             state["entry_time"] = None
             state["highest_price"] = None
+            state["lowest_price"] = None
             return state
         if state.get("entry_time") is None:
             fills = await self.db.fetch_simulation_fills(portfolio_id=config.portfolio_id, limit=100)
@@ -639,6 +718,10 @@ class AutomatedSimulationWorker:
             )
             state["entry_time"] = latest_buy["created_at"] if latest_buy else datetime.now(timezone.utc)
             state["highest_price"] = mark_price
+            state["lowest_price"] = mark_price
+        elif mark_price is not None:
+            state["highest_price"] = max(Decimal(str(state.get("highest_price") or mark_price)), mark_price)
+            state["lowest_price"] = min(Decimal(str(state.get("lowest_price") or mark_price)), mark_price)
         return state
 
     def _mark_price(
@@ -754,6 +837,21 @@ class AutomatedSimulationWorker:
 
 def _mean(values: list[Decimal]) -> Decimal:
     return sum(values, Decimal("0")) / Decimal(len(values))
+
+
+def _atr(candles: list[dict[str, Any]], window: int) -> Decimal:
+    rows = candles[-window - 1 :]
+    if len(rows) < 2:
+        return Decimal("0")
+    ranges: list[Decimal] = []
+    previous_close = Decimal(str(rows[0]["close"]))
+    for row in rows[1:]:
+        high = Decimal(str(row["high"]))
+        low = Decimal(str(row["low"]))
+        true_range = max(high - low, abs(high - previous_close), abs(low - previous_close))
+        ranges.append(true_range)
+        previous_close = Decimal(str(row["close"]))
+    return _mean(ranges) if ranges else Decimal("0")
 
 
 def _elapsed_minutes(start: datetime, end: datetime) -> Decimal:

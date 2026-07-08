@@ -22,6 +22,13 @@ def _candle(index: int, close: Decimal) -> dict[str, object]:
     }
 
 
+def _wide_candle(index: int, close: Decimal) -> dict[str, object]:
+    candle = _candle(index, close)
+    candle["high"] = close + Decimal("4")
+    candle["low"] = close - Decimal("4")
+    return candle
+
+
 def test_automation_sma_signal_buys_when_short_ma_above_long_ma() -> None:
     worker = AutomatedSimulationWorker(MarketState(["AAAUSDT"]), db=None)  # type: ignore[arg-type]
     candles = [_candle(index, Decimal(100 + index)) for index in range(20)]
@@ -84,6 +91,68 @@ def test_automation_momentum_entry_requires_expected_move_above_cost() -> None:
     assert Decimal(metrics["price_change_bps"]) < Decimal(metrics["required_move_bps"])
 
 
+def test_automation_momentum_entry_requires_trend_filter() -> None:
+    worker = AutomatedSimulationWorker(MarketState(["AAAUSDT"]), db=None)  # type: ignore[arg-type]
+    closes = [Decimal("110") - Decimal(index) for index in range(55)]
+    candles = [_wide_candle(index, close) for index, close in enumerate(closes)]
+    candles[-1]["close"] = Decimal("111")
+    candles[-1]["high"] = Decimal("112")
+
+    signal, reason, metrics = worker._compute_signal(
+        AutomationConfig(
+            symbol="AAAUSDT",
+            strategy="momentum_breakout",
+            momentum_window=3,
+            trend_window=20,
+            min_trend_bps=Decimal("25"),
+            breakout_bps=Decimal("0"),
+            min_expected_move_bps=Decimal("0"),
+            min_volume_ratio=Decimal("0"),
+            min_atr_bps=Decimal("0"),
+        ),
+        candles,
+        Decimal("0"),
+    )
+
+    assert signal == "hold"
+    assert reason == "trend_filter_failed"
+    assert Decimal(metrics["trend_bps"]) < Decimal("25")
+
+
+def test_automation_momentum_entry_records_dynamic_atr_target() -> None:
+    worker = AutomatedSimulationWorker(MarketState(["AAAUSDT"]), db=None)  # type: ignore[arg-type]
+    closes = [Decimal("100") + Decimal(index) for index in range(60)]
+    candles = [_wide_candle(index, close) for index, close in enumerate(closes)]
+    for candle in candles:
+        candle["volume"] = Decimal("100")
+    candles[-1]["close"] = Decimal("170")
+    candles[-1]["high"] = Decimal("171")
+    candles[-1]["low"] = Decimal("160")
+
+    signal, reason, metrics = worker._compute_signal(
+        AutomationConfig(
+            symbol="AAAUSDT",
+            strategy="momentum_breakout",
+            momentum_window=20,
+            trend_window=30,
+            breakout_bps=Decimal("0"),
+            min_expected_move_bps=Decimal("0"),
+            min_volume_ratio=Decimal("0"),
+            min_atr_bps=Decimal("0"),
+            min_close_location=Decimal("0"),
+            min_take_profit_bps=Decimal("50"),
+            max_take_profit_bps=Decimal("150"),
+            atr_target_multiplier=Decimal("1.2"),
+        ),
+        candles,
+        Decimal("0"),
+    )
+
+    assert signal == "buy"
+    assert reason == "close_broke_above_prior_high"
+    assert Decimal(metrics["dynamic_take_profit_bps"]) >= Decimal("50")
+
+
 @pytest.mark.asyncio
 async def test_position_manager_blocks_reentry_during_cooldown() -> None:
     worker = AutomatedSimulationWorker(MarketState(["AAAUSDT"]), db=None)  # type: ignore[arg-type]
@@ -121,6 +190,7 @@ async def test_position_manager_profit_only_blocks_stop_loss_exit() -> None:
         symbol="AAAUSDT",
         stop_loss_bps=Decimal("50"),
         max_spread_bps=Decimal("10"),
+        profit_only_exits=True,
     )
     worker._position_state["default:binance:AAAUSDT"] = {
         "entry_time": datetime.now(timezone.utc) - timedelta(minutes=10),
@@ -214,3 +284,39 @@ async def test_position_manager_take_profit_exits_immediately() -> None:
     assert reason == "take_profit_reached"
     assert metrics["position_manager"]["exit_type"] == "take_profit"
     assert Decimal(metrics["position_manager"]["holding_minutes"]) < config.max_holding_minutes
+
+
+@pytest.mark.asyncio
+async def test_position_manager_records_mae_mfe_and_exits_on_breakout_invalidation() -> None:
+    worker = AutomatedSimulationWorker(MarketState(["AAAUSDT"]), db=None)  # type: ignore[arg-type]
+    config = AutomationConfig(
+        portfolio_id="default",
+        symbol="AAAUSDT",
+        profit_only_exits=False,
+        max_spread_bps=Decimal("10"),
+    )
+    worker._position_state["default:binance:AAAUSDT"] = {
+        "entry_time": datetime.now(timezone.utc) - timedelta(minutes=10),
+        "highest_price": Decimal("103"),
+        "lowest_price": Decimal("99"),
+        "last_trade_time": None,
+    }
+
+    signal, reason, metrics = await worker._apply_position_manager(
+        config=config,
+        raw_signal="hold",
+        raw_reason="no_momentum_breakout_action",
+        metrics={"close": "99.5", "invalidation_level": "100", "dynamic_take_profit_bps": "75"},
+        position={
+            "quantity": Decimal("1"),
+            "avg_entry_price": Decimal("100"),
+            "mark_price": Decimal("99.5"),
+        },
+        book={"bid_price": Decimal("99.49"), "ask_price": Decimal("99.51")},
+    )
+
+    assert signal == "sell"
+    assert reason == "breakout_level_lost"
+    assert metrics["position_manager"]["exit_type"] == "breakout_invalidation"
+    assert Decimal(metrics["position_manager"]["max_favorable_bps"]) > 0
+    assert Decimal(metrics["position_manager"]["max_adverse_bps"]) < 0
