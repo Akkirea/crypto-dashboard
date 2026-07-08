@@ -44,6 +44,7 @@ class AutomationConfig:
     max_trades_per_day: int = 10
     max_fee_burn_per_day: Decimal = Decimal("5")
     pause_after_loss_streak: int = 3
+    profit_only_exits: bool = True
     experiment_id: Optional[int] = None
 
 
@@ -510,8 +511,15 @@ class AutomatedSimulationWorker:
         if spread_bps is not None and spread_bps > config.max_spread_bps:
             manager["market_quality"] = "spread_too_wide"
             metrics["position_manager"] = manager
-            if position_qty > 0:
+            if position_qty > 0 and not config.profit_only_exits:
                 return "sell", "spread_widened_beyond_limit", metrics
+            if position_qty > 0:
+                metrics["position_manager"] = {
+                    **manager,
+                    "blocked_exit_reason": "spread_widened_beyond_limit",
+                    "profit_only_exits": True,
+                }
+                return "hold", "profit_only_exit_blocked_spread_exit", metrics
             return "hold", "spread_too_wide_for_entry", metrics
 
         if position_qty <= 0:
@@ -555,25 +563,43 @@ class AutomatedSimulationWorker:
             }
         )
 
-        if pnl_bps <= -config.stop_loss_bps:
-            metrics["position_manager"] = {**manager, "decision": "sell", "exit_type": "hard_stop"}
-            return "sell", "stop_loss_triggered", metrics
-        if mark_price <= trailing_stop_price:
-            metrics["position_manager"] = {**manager, "decision": "sell", "exit_type": "trailing_stop"}
-            return "sell", "trailing_stop_triggered", metrics
-        if holding_minutes >= config.max_holding_minutes:
-            metrics["position_manager"] = {**manager, "decision": "sell", "exit_type": "time_stop"}
-            return "sell", "max_holding_time_reached", metrics
         if config.take_profit_bps > 0 and pnl_bps >= config.take_profit_bps:
             metrics["position_manager"] = {**manager, "decision": "sell", "exit_type": "take_profit"}
             return "sell", "take_profit_reached", metrics
+
+        if config.profit_only_exits and pnl_bps <= 0:
+            blocked_reason = None
+            if pnl_bps <= -config.stop_loss_bps:
+                blocked_reason = "stop_loss_triggered"
+            elif mark_price <= trailing_stop_price:
+                blocked_reason = "trailing_stop_triggered"
+            elif holding_minutes >= config.max_holding_minutes:
+                blocked_reason = "max_holding_time_reached"
+            elif raw_signal == "sell":
+                blocked_reason = raw_reason
+            manager["profit_only_exits"] = True
+            if blocked_reason is not None:
+                manager["blocked_exit_reason"] = blocked_reason
+                manager["reason"] = "holding_until_profitable"
+                metrics["position_manager"] = manager
+                return "hold", "profit_only_exit_blocked_loss_exit", metrics
+
+        if not config.profit_only_exits and pnl_bps <= -config.stop_loss_bps:
+            metrics["position_manager"] = {**manager, "decision": "sell", "exit_type": "hard_stop"}
+            return "sell", "stop_loss_triggered", metrics
+        if not config.profit_only_exits and mark_price <= trailing_stop_price:
+            metrics["position_manager"] = {**manager, "decision": "sell", "exit_type": "trailing_stop"}
+            return "sell", "trailing_stop_triggered", metrics
+        if not config.profit_only_exits and holding_minutes >= config.max_holding_minutes:
+            metrics["position_manager"] = {**manager, "decision": "sell", "exit_type": "time_stop"}
+            return "sell", "max_holding_time_reached", metrics
 
         if holding_minutes < config.min_holding_minutes:
             remaining = config.min_holding_minutes - holding_minutes
             manager["min_hold_remaining_minutes"] = str(remaining)
             metrics["position_manager"] = manager
             return "hold", "minimum_hold_active", metrics
-        if raw_signal == "sell":
+        if raw_signal == "sell" and (not config.profit_only_exits or pnl_bps > 0):
             metrics["position_manager"] = {**manager, "decision": "sell", "exit_type": "strategy_exit"}
             return "sell", raw_reason, metrics
 

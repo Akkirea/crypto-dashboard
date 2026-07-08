@@ -114,13 +114,48 @@ async def test_position_manager_blocks_reentry_during_cooldown() -> None:
 
 
 @pytest.mark.asyncio
-async def test_position_manager_stop_loss_overrides_hold_signal() -> None:
+async def test_position_manager_profit_only_blocks_stop_loss_exit() -> None:
     worker = AutomatedSimulationWorker(MarketState(["AAAUSDT"]), db=None)  # type: ignore[arg-type]
     config = AutomationConfig(
         portfolio_id="default",
         symbol="AAAUSDT",
         stop_loss_bps=Decimal("50"),
         max_spread_bps=Decimal("10"),
+    )
+    worker._position_state["default:binance:AAAUSDT"] = {
+        "entry_time": datetime.now(timezone.utc) - timedelta(minutes=10),
+        "highest_price": Decimal("100"),
+        "last_trade_time": None,
+    }
+
+    signal, reason, metrics = await worker._apply_position_manager(
+        config=config,
+        raw_signal="hold",
+        raw_reason="no_momentum_breakout_action",
+        metrics={"close": "99"},
+        position={
+            "quantity": Decimal("1"),
+            "avg_entry_price": Decimal("100"),
+            "mark_price": Decimal("99"),
+        },
+        book={"bid_price": Decimal("98.99"), "ask_price": Decimal("99.01")},
+    )
+
+    assert signal == "hold"
+    assert reason == "profit_only_exit_blocked_loss_exit"
+    assert metrics["position_manager"]["blocked_exit_reason"] == "stop_loss_triggered"
+    assert metrics["position_manager"]["profit_only_exits"] is True
+
+
+@pytest.mark.asyncio
+async def test_position_manager_stop_loss_can_be_enabled_for_risk_mode() -> None:
+    worker = AutomatedSimulationWorker(MarketState(["AAAUSDT"]), db=None)  # type: ignore[arg-type]
+    config = AutomationConfig(
+        portfolio_id="default",
+        symbol="AAAUSDT",
+        stop_loss_bps=Decimal("50"),
+        max_spread_bps=Decimal("10"),
+        profit_only_exits=False,
     )
     worker._position_state["default:binance:AAAUSDT"] = {
         "entry_time": datetime.now(timezone.utc) - timedelta(minutes=10),
