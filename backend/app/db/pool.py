@@ -82,6 +82,9 @@ class Database:
         self.pool: Optional[asyncpg.Pool] = None
         self._last_book_persist_ms: dict[tuple[str, str], int] = {}
         self._connect_lock = asyncio.Lock()
+        self._last_size_check_monotonic: float = 0
+        self._database_bytes: Optional[int] = None
+        self._raw_persistence_paused = False
 
     async def connect(self) -> None:
         if not settings.database_url:
@@ -487,7 +490,7 @@ class Database:
             )
 
     async def save_trade(self, event: TradeEvent) -> None:
-        if not self.pool:
+        if not self.pool or not settings.persist_raw_trades or await self._raw_persistence_blocked():
             return
         await self.pool.execute(
             """
@@ -511,7 +514,7 @@ class Database:
         )
 
     async def save_book(self, event: BookTopEvent) -> None:
-        if not self.pool:
+        if not self.pool or not settings.persist_order_book_top or await self._raw_persistence_blocked():
             return
         throttle_ms = max(0, settings.order_book_persist_interval_ms)
         key = (event.exchange, event.symbol)
@@ -754,6 +757,37 @@ class Database:
             """
         )
         return [dict(row) for row in rows]
+
+    async def database_size_bytes(self) -> Optional[int]:
+        if not self.pool:
+            return None
+        return await self.pool.fetchval("SELECT pg_database_size(current_database())::bigint")
+
+    async def _raw_persistence_blocked(self) -> bool:
+        if not self.pool or settings.max_database_bytes <= 0:
+            return False
+        now = asyncio.get_running_loop().time()
+        if now - self._last_size_check_monotonic < settings.database_guard_check_interval_seconds:
+            return self._raw_persistence_paused
+        self._last_size_check_monotonic = now
+        try:
+            self._database_bytes = await self.database_size_bytes()
+        except Exception:
+            logger.exception("database size guard failed")
+            return self._raw_persistence_paused
+        self._raw_persistence_paused = bool(
+            self._database_bytes is not None
+            and self._database_bytes >= settings.max_database_bytes
+        )
+        if self._raw_persistence_paused:
+            logger.warning(
+                "raw persistence paused because database size reached guardrail",
+                extra={
+                    "database_bytes": self._database_bytes,
+                    "max_database_bytes": settings.max_database_bytes,
+                },
+            )
+        return self._raw_persistence_paused
 
     async def record_system_event(
         self,
@@ -1958,6 +1992,7 @@ class Database:
         cleanup_specs = [
             ("trades", "trade_time", settings.trades_retention_days, "day"),
             ("order_book_top", "received_at", settings.order_book_retention_hours, "hour"),
+            ("order_book_rollups", "bucket_start", settings.candles_retention_days, "day"),
             ("candles", "open_time", settings.candles_retention_days, "day"),
             ("analytics_events", "occurred_at", settings.analytics_events_retention_days, "day"),
             ("analytics_snapshots", "computed_at", settings.analytics_snapshots_retention_days, "day"),
@@ -1967,20 +2002,21 @@ class Database:
         async with self.pool.acquire() as conn:
             for table_name, timestamp_column, retention_value, retention_unit in cleanup_specs:
                 if retention_value <= 0:
-                    continue
-                result = await conn.execute(
-                    f"""
-                    DELETE FROM {table_name}
-                    WHERE id IN (
-                      SELECT id
-                      FROM {table_name}
-                      WHERE {timestamp_column} < now() - ($1::int * interval '1 {retention_unit}')
-                      ORDER BY {timestamp_column}
-                      LIMIT $2
+                    result = await conn.execute(f"DELETE FROM {table_name}")
+                else:
+                    result = await conn.execute(
+                        f"""
+                        DELETE FROM {table_name}
+                        WHERE id IN (
+                          SELECT id
+                          FROM {table_name}
+                          WHERE {timestamp_column} < now() - ($1::int * interval '1 {retention_unit}')
+                          ORDER BY {timestamp_column}
+                          LIMIT $2
+                        )
+                        """,
+                        retention_value,
+                        settings.retention_delete_limit,
                     )
-                    """,
-                    retention_value,
-                    settings.retention_delete_limit,
-                )
                 deleted[table_name] = int(result.rsplit(" ", 1)[-1])
         return deleted

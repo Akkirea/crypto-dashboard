@@ -50,10 +50,14 @@ async def database_health(request: Request) -> dict[str, object]:
     return {
         "status": "ok" if connected else "unavailable",
         "connected": connected,
+        "database_size_bytes": await db.database_size_bytes() if connected else None,
+        "max_database_bytes": settings.max_database_bytes,
         "retention": {
             "enabled": settings.retention_enabled,
             "interval_seconds": settings.retention_interval_seconds,
             "delete_limit": settings.retention_delete_limit,
+            "persist_raw_trades": settings.persist_raw_trades,
+            "persist_order_book_top": settings.persist_order_book_top,
             "order_book_persist_interval_ms": settings.order_book_persist_interval_ms,
             "rollups": {
                 "enabled": settings.rollups_enabled,
