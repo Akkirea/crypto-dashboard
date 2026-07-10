@@ -14,6 +14,7 @@ import {
   ShieldCheck,
   WalletCards
 } from "lucide-react";
+import { Btc24hChart } from "@/components/Btc24hChart";
 import { CandleChart } from "@/components/CandleChart";
 import { ConnectionHealth } from "@/components/ConnectionHealth";
 import { OrderBook } from "@/components/OrderBook";
@@ -256,6 +257,8 @@ export default function DashboardPage() {
             })}
             </div>
           </section>
+
+          <Btc24hChart />
 
           <section className="mb-5 grid gap-3 md:grid-cols-3 xl:grid-cols-[1fr_1fr_1fr_180px]">
             {SYMBOLS.map((symbol) => (
