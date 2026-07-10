@@ -501,7 +501,14 @@ class AutomatedSimulationWorker:
             max(config.min_take_profit_bps, atr_bps * config.atr_target_multiplier),
         )
         round_trip_cost_bps = _estimated_round_trip_cost_bps()
-        required_move_bps = max(config.min_expected_move_bps, round_trip_cost_bps + Decimal("10"), atr_bps * Decimal("0.50"))
+        if config.mode == "exploration":
+            required_move_bps = max(config.min_expected_move_bps, atr_bps * Decimal("0.25"))
+        else:
+            required_move_bps = max(
+                config.min_expected_move_bps,
+                round_trip_cost_bps + Decimal("10"),
+                atr_bps * Decimal("0.50"),
+            )
         metrics = {
             "close": str(close),
             "prior_high": str(prior_high),
@@ -519,6 +526,7 @@ class AutomatedSimulationWorker:
             "volume_ratio": str(volume_ratio),
             "round_trip_cost_bps": str(round_trip_cost_bps),
             "required_move_bps": str(required_move_bps),
+            "automation_mode": config.mode,
         }
         if position_qty <= 0 and close > breakout_level:
             if trend_bps < config.min_trend_bps:
