@@ -52,6 +52,7 @@ class BacktestRequest(BaseModel):
 class AutomationRequest(BaseModel):
     portfolio_id: str = Field(default="default", max_length=64)
     symbol: str = Field(default="BTCUSDT", max_length=32)
+    mode: str = Field(default="candidate", pattern="^(exploration|candidate)$")
     interval: str = Field(default="5m", pattern=INTERVAL_PATTERN)
     strategy: str = Field(default="momentum_breakout", pattern="^(sma_cross|momentum_breakout)$")
     poll_seconds: float = Field(default=settings.simulation_automation_poll_seconds, ge=5, le=3600)
@@ -89,7 +90,7 @@ class AutomationRequest(BaseModel):
     max_trades_per_day: int = Field(default=10, ge=1, le=10000)
     max_fee_burn_per_day: Decimal = Field(default=Decimal("5"), ge=0, le=1000000)
     pause_after_loss_streak: int = Field(default=3, ge=1, le=10000)
-    profit_only_exits: bool = True
+    profit_only_exits: bool = False
 
 
 @router.get("/config")
@@ -125,6 +126,22 @@ async def simulation_config() -> dict[str, object]:
             "default_notional": settings.simulation_automation_default_notional,
             "max_position_notional": settings.simulation_automation_max_position_notional,
             "poll_seconds": settings.simulation_automation_poll_seconds,
+            "modes": {
+                "exploration": {
+                    "purpose": "higher-frequency simulated data collection",
+                    "target_trades_per_day": "15-40",
+                    "interval": "5m",
+                    "notional": 10,
+                    "max_position_notional": 50,
+                },
+                "candidate": {
+                    "purpose": "stricter forward validation",
+                    "target_trades_per_day": "1-8",
+                    "interval": "15m",
+                    "notional": 25,
+                    "max_position_notional": 100,
+                },
+            },
         },
     }
 
@@ -198,6 +215,7 @@ async def start_automation(request: Request, payload: AutomationRequest) -> dict
                 portfolio_id=payload.portfolio_id,
                 exchange=settings.simulation_default_exchange,
                 symbol=symbol,
+                mode=payload.mode,
                 interval=payload.interval,
                 strategy=payload.strategy,
                 enabled=True,

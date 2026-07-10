@@ -33,6 +33,120 @@ import {
 } from "@/lib/simulationTypes";
 
 const STRATEGY_INTERVALS: SimulationInterval[] = ["1m", "5m", "15m", "1h"];
+type AutomationMode = "exploration" | "candidate";
+
+const AUTOMATION_PRESETS: Record<
+  AutomationMode,
+  {
+    label: string;
+    description: string;
+    target: string;
+    payload: {
+      interval: SimulationInterval;
+      poll_seconds: number;
+      notional: number;
+      max_position_notional: number;
+      momentum_window: number;
+      breakout_bps: number;
+      exit_window: number;
+      trend_window: number;
+      min_trend_bps: number;
+      atr_window: number;
+      atr_target_multiplier: number;
+      min_take_profit_bps: number;
+      max_take_profit_bps: number;
+      min_close_location: number;
+      min_atr_bps: number;
+      min_expected_move_bps: number;
+      min_volume_ratio: number;
+      stop_loss_bps: number;
+      trailing_stop_bps: number;
+      take_profit_bps: number;
+      min_holding_minutes: number;
+      max_holding_minutes: number;
+      cooldown_minutes: number;
+      max_spread_bps: number;
+      daily_max_loss: number;
+      max_trades_per_day: number;
+      max_fee_burn_per_day: number;
+      pause_after_loss_streak: number;
+      profit_only_exits: boolean;
+    };
+  }
+> = {
+  exploration: {
+    label: "Exploration",
+    description: "Higher-frequency 5m data collection with tiny simulated size.",
+    target: "15-40 trades/day",
+    payload: {
+      interval: "5m",
+      poll_seconds: 30,
+      notional: 10,
+      max_position_notional: 50,
+      momentum_window: 6,
+      breakout_bps: 5,
+      exit_window: 4,
+      trend_window: 12,
+      min_trend_bps: -25,
+      atr_window: 10,
+      atr_target_multiplier: 1.0,
+      min_take_profit_bps: 35,
+      max_take_profit_bps: 90,
+      min_close_location: 0.45,
+      min_atr_bps: 3,
+      min_expected_move_bps: 18,
+      min_volume_ratio: 0.55,
+      stop_loss_bps: 65,
+      trailing_stop_bps: 45,
+      take_profit_bps: 55,
+      min_holding_minutes: 5,
+      max_holding_minutes: 45,
+      cooldown_minutes: 0,
+      max_spread_bps: 10,
+      daily_max_loss: 20,
+      max_trades_per_day: 40,
+      max_fee_burn_per_day: 8,
+      pause_after_loss_streak: 6,
+      profit_only_exits: false
+    }
+  },
+  candidate: {
+    label: "Candidate",
+    description: "Stricter 15m forward validation for signals that survive costs.",
+    target: "1-8 trades/day",
+    payload: {
+      interval: "15m",
+      poll_seconds: 60,
+      notional: 25,
+      max_position_notional: 100,
+      momentum_window: 20,
+      breakout_bps: 25,
+      exit_window: 10,
+      trend_window: 50,
+      min_trend_bps: 0,
+      atr_window: 14,
+      atr_target_multiplier: 1.2,
+      min_take_profit_bps: 50,
+      max_take_profit_bps: 150,
+      min_close_location: 0.65,
+      min_atr_bps: 10,
+      min_expected_move_bps: 45,
+      min_volume_ratio: 1.5,
+      stop_loss_bps: 75,
+      trailing_stop_bps: 50,
+      take_profit_bps: 90,
+      min_holding_minutes: 30,
+      max_holding_minutes: 240,
+      cooldown_minutes: 10,
+      max_spread_bps: 10,
+      daily_max_loss: 25,
+      max_trades_per_day: 8,
+      max_fee_burn_per_day: 5,
+      pause_after_loss_streak: 3,
+      profit_only_exits: false
+    }
+  }
+};
 
 export default function SimulationPage() {
   const [config, setConfig] = useState<SimulationConfig | null>(null);
@@ -51,6 +165,7 @@ export default function SimulationPage() {
   const [experiments, setExperiments] = useState<SimulationExperiment[]>([]);
   const [automation, setAutomation] = useState<AutomationStatus | null>(null);
   const [automationSignals, setAutomationSignals] = useState<AutomationSignal[]>([]);
+  const [automationMode, setAutomationMode] = useState<AutomationMode>("exploration");
   const [strategyInterval, setStrategyInterval] = useState<SimulationInterval>("5m");
   const [backtestStrategy, setBacktestStrategy] = useState<BacktestStrategy>("momentum_breakout");
   const [shortWindow, setShortWindow] = useState("5");
@@ -186,6 +301,7 @@ export default function SimulationPage() {
   const currentFills = currentExperimentId === null ? fills : fills.filter((fill) => fill.experiment_id === currentExperimentId);
   const latestSignal = automation?.last_signal ?? null;
   const latestManager = positionManagerPayload(latestSignal);
+  const activeAutomationMode = automation?.config.mode ?? automationMode;
 
   async function submitOrder() {
     setSubmitting(true);
@@ -305,43 +421,45 @@ export default function SimulationPage() {
   async function startAutomation() {
     setAutomationSubmitting(true);
     try {
+      const preset = AUTOMATION_PRESETS[automationMode];
       const response = await fetch(`${backendHttpUrl()}/api/simulation/automation/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           symbol,
-          interval: strategyInterval,
+          mode: automationMode,
+          interval: preset.payload.interval,
           strategy: backtestStrategy,
-          poll_seconds: 30,
-          notional: 25,
-          max_position_notional: 100,
+          poll_seconds: preset.payload.poll_seconds,
+          notional: preset.payload.notional,
+          max_position_notional: preset.payload.max_position_notional,
           short_window: Number(shortWindow),
           long_window: Number(longWindow),
-          momentum_window: Number(momentumWindow),
-          breakout_bps: Number(breakoutBps),
-          exit_window: Number(exitWindow),
-          trend_window: 50,
-          min_trend_bps: 0,
-          atr_window: 14,
-          atr_target_multiplier: 1.2,
-          min_take_profit_bps: 50,
-          max_take_profit_bps: 150,
-          min_close_location: 0.65,
-          min_atr_bps: 10,
-          min_expected_move_bps: 35,
-          min_volume_ratio: 1.5,
-          stop_loss_bps: 50,
-          trailing_stop_bps: 35,
-          take_profit_bps: 75,
-          min_holding_minutes: 3,
-          max_holding_minutes: 90,
-          cooldown_minutes: 5,
-          max_spread_bps: 10,
-          daily_max_loss: 25,
-          max_trades_per_day: 10,
-          max_fee_burn_per_day: 5,
-          pause_after_loss_streak: 3,
-          profit_only_exits: false
+          momentum_window: preset.payload.momentum_window,
+          breakout_bps: preset.payload.breakout_bps,
+          exit_window: preset.payload.exit_window,
+          trend_window: preset.payload.trend_window,
+          min_trend_bps: preset.payload.min_trend_bps,
+          atr_window: preset.payload.atr_window,
+          atr_target_multiplier: preset.payload.atr_target_multiplier,
+          min_take_profit_bps: preset.payload.min_take_profit_bps,
+          max_take_profit_bps: preset.payload.max_take_profit_bps,
+          min_close_location: preset.payload.min_close_location,
+          min_atr_bps: preset.payload.min_atr_bps,
+          min_expected_move_bps: preset.payload.min_expected_move_bps,
+          min_volume_ratio: preset.payload.min_volume_ratio,
+          stop_loss_bps: preset.payload.stop_loss_bps,
+          trailing_stop_bps: preset.payload.trailing_stop_bps,
+          take_profit_bps: preset.payload.take_profit_bps,
+          min_holding_minutes: preset.payload.min_holding_minutes,
+          max_holding_minutes: preset.payload.max_holding_minutes,
+          cooldown_minutes: preset.payload.cooldown_minutes,
+          max_spread_bps: preset.payload.max_spread_bps,
+          daily_max_loss: preset.payload.daily_max_loss,
+          max_trades_per_day: preset.payload.max_trades_per_day,
+          max_fee_burn_per_day: preset.payload.max_fee_burn_per_day,
+          pause_after_loss_streak: preset.payload.pause_after_loss_streak,
+          profit_only_exits: preset.payload.profit_only_exits
         })
       });
       if (!response.ok) {
@@ -439,7 +557,10 @@ export default function SimulationPage() {
           <AutomationPanel
             status={automation}
             signals={automationSignals}
+            selectedMode={automationMode}
+            activeMode={activeAutomationMode}
             running={automationSubmitting}
+            onModeChange={setAutomationMode}
             onStart={startAutomation}
             onStop={stopAutomation}
             onEvaluate={evaluateAutomation}
@@ -551,6 +672,7 @@ function MonitorPanel({
             <span className={running ? "text-buy" : "text-muted"}>{running ? "Running" : "Stopped"}</span>
             <span>Experiment #{experiment?.id ?? "—"}</span>
             <span>{automation?.config.strategy ?? "—"}</span>
+            <span>{automation?.config.mode ?? "—"}</span>
             <span>{automation?.config.interval ?? "—"}</span>
           </div>
         </div>
@@ -824,14 +946,20 @@ function PaperFills({ fills, title = "Fills" }: { fills: SimulationFill[]; title
 function AutomationPanel({
   status,
   signals,
+  selectedMode,
+  activeMode,
   running,
+  onModeChange,
   onStart,
   onStop,
   onEvaluate
 }: {
   status: AutomationStatus | null;
   signals: AutomationSignal[];
+  selectedMode: AutomationMode;
+  activeMode: AutomationMode;
   running: boolean;
+  onModeChange: (mode: AutomationMode) => void;
   onStart: () => void;
   onStop: () => void;
   onEvaluate: () => void;
@@ -880,9 +1008,54 @@ function AutomationPanel({
         </div>
       </div>
 
+      <section className="mb-4 grid gap-3 md:grid-cols-2">
+        {(Object.keys(AUTOMATION_PRESETS) as AutomationMode[]).map((mode) => {
+          const preset = AUTOMATION_PRESETS[mode];
+          const selected = selectedMode === mode;
+          const active = enabled && activeMode === mode;
+          return (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => onModeChange(mode)}
+              disabled={running || enabled}
+              className={`rounded-lg border p-4 text-left transition disabled:cursor-not-allowed ${
+                selected
+                  ? "border-gold/50 bg-gold/15"
+                  : "border-white/10 bg-white/[0.04] hover:border-white/25 hover:bg-white/[0.06]"
+              }`}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="font-medium text-white">{preset.label}</div>
+                  <div className="mt-1 text-xs text-muted">{preset.description}</div>
+                </div>
+                <div className={`rounded-md px-2 py-1 text-xs ${active ? "bg-buy/15 text-buy" : "bg-white/[0.06] text-muted"}`}>
+                  {active ? "active" : preset.payload.interval}
+                </div>
+              </div>
+              <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                <div className="rounded-md bg-black/20 p-2">
+                  <div className="text-muted">Target</div>
+                  <div className="mt-1 text-white">{preset.target}</div>
+                </div>
+                <div className="rounded-md bg-black/20 p-2">
+                  <div className="text-muted">Notional</div>
+                  <div className="mt-1 text-white">${preset.payload.notional}</div>
+                </div>
+                <div className="rounded-md bg-black/20 p-2">
+                  <div className="text-muted">Max/day</div>
+                  <div className="mt-1 text-white">{preset.payload.max_trades_per_day}</div>
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </section>
+
       <section className="mb-4 grid gap-3 md:grid-cols-5">
         <Metric label="Status" value={enabled ? "Running" : "Stopped"} detail={status?.last_error ?? "Read-only simulation"} />
-        <Metric label="Strategy" value={config?.strategy ?? "—"} detail={config?.symbol ?? "—"} />
+        <Metric label="Strategy" value={config?.strategy ?? "—"} detail={`${config?.mode ?? selectedMode} · ${config?.symbol ?? "—"}`} />
         <Metric label="Notional" value={`$${fmtPrice(toNumber(config?.notional))}`} detail={`Cap $${fmtPrice(toNumber(config?.max_position_notional))}`} />
         <Metric label="Poll" value={`${fmtPrice(toNumber(config?.poll_seconds))}s`} detail={config?.interval ?? "—"} />
         <Metric label="Entry Filter" value={`${fmtPrice(toNumber(config?.min_expected_move_bps))} bps`} detail={`Vol ${fmtPrice(toNumber(config?.min_volume_ratio))}x · Close ${fmtPrice(toNumber(config?.min_close_location))}`} />

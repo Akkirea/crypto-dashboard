@@ -22,6 +22,22 @@ export type SimulationConfig = {
     strategies: string[];
     data_source: string;
   };
+  automation?: {
+    enabled: boolean;
+    default_notional: number;
+    max_position_notional: number;
+    poll_seconds: number;
+    modes?: Record<
+      "exploration" | "candidate",
+      {
+        purpose: string;
+        target_trades_per_day: string;
+        interval: SimulationInterval;
+        notional: number;
+        max_position_notional: number;
+      }
+    >;
+  };
 };
 
 export type SimulationSnapshot = {
@@ -216,6 +232,7 @@ export type AutomationStatus = {
     portfolio_id: string;
     exchange: string;
     symbol: string;
+    mode: "exploration" | "candidate";
     interval: SimulationInterval;
     strategy: BacktestStrategy;
     enabled: boolean;

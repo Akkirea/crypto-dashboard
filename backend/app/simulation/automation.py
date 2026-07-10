@@ -20,6 +20,7 @@ class AutomationConfig:
     portfolio_id: str = "default"
     exchange: str = "binance"
     symbol: str = "BTCUSDT"
+    mode: str = "candidate"
     interval: str = "5m"
     strategy: str = "momentum_breakout"
     enabled: bool = False
@@ -93,6 +94,8 @@ class AutomatedSimulationWorker:
         async with self._lock:
             if config.symbol not in self.state.symbols:
                 raise ValueError(f"unsupported symbol: {config.symbol}")
+            if config.mode not in {"exploration", "candidate"}:
+                raise ValueError(f"unsupported automation mode: {config.mode}")
             if config.strategy not in {"sma_cross", "momentum_breakout"}:
                 raise ValueError(f"unsupported strategy: {config.strategy}")
             if config.notional <= 0:
@@ -108,6 +111,7 @@ class AutomatedSimulationWorker:
                 and self.config.portfolio_id == config.portfolio_id
                 and self.config.exchange == config.exchange
                 and self.config.symbol == config.symbol
+                and self.config.mode == config.mode
                 and self.config.interval == config.interval
                 and self.config.strategy == config.strategy
             ):
