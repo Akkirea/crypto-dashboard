@@ -38,7 +38,7 @@ class SimulatedMarketOrderRequest(BaseModel):
 class BacktestRequest(BaseModel):
     symbol: str = Field(..., max_length=32)
     interval: str = Field(default="5m", pattern=INTERVAL_PATTERN)
-    strategy: str = Field(default="momentum_breakout", pattern="^(sma_cross|momentum_breakout)$")
+    strategy: str = Field(default="momentum_breakout", pattern="^(sma_cross|momentum_breakout|pullback_reclaim)$")
     initial_cash: Decimal = Field(default=Decimal("10000"), gt=0)
     short_window: int = Field(default=5, ge=2, le=200)
     long_window: int = Field(default=20, ge=3, le=500)
@@ -54,7 +54,7 @@ class AutomationRequest(BaseModel):
     symbol: str = Field(default="BTCUSDT", max_length=32)
     mode: str = Field(default="candidate", pattern="^(exploration|candidate)$")
     interval: str = Field(default="5m", pattern=INTERVAL_PATTERN)
-    strategy: str = Field(default="momentum_breakout", pattern="^(sma_cross|momentum_breakout)$")
+    strategy: str = Field(default="momentum_breakout", pattern="^(sma_cross|momentum_breakout|pullback_reclaim)$")
     poll_seconds: float = Field(default=settings.simulation_automation_poll_seconds, ge=5, le=3600)
     notional: Decimal = Field(
         default=Decimal(str(settings.simulation_automation_default_notional)),

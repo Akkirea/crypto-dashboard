@@ -153,6 +153,65 @@ def test_automation_momentum_entry_records_dynamic_atr_target() -> None:
     assert Decimal(metrics["dynamic_take_profit_bps"]) >= Decimal("50")
 
 
+def test_automation_pullback_reclaim_buys_after_recent_low_reclaim() -> None:
+    worker = AutomatedSimulationWorker(MarketState(["AAAUSDT"]), db=None)  # type: ignore[arg-type]
+    closes = [Decimal("100"), Decimal("102"), Decimal("104"), Decimal("103"), Decimal("101.2")]
+    candles = [_candle(index, close) for index, close in enumerate(closes)]
+    candles[-1]["open"] = Decimal("100.2")
+    candles[-1]["low"] = Decimal("100.8")
+    candles[-1]["volume"] = Decimal("150")
+
+    signal, reason, metrics = worker._compute_signal(
+        AutomationConfig(
+            symbol="AAAUSDT",
+            strategy="pullback_reclaim",
+            momentum_window=3,
+            trend_window=3,
+            breakout_bps=Decimal("0"),
+            min_trend_bps=Decimal("-100"),
+            min_expected_move_bps=Decimal("0"),
+            min_volume_ratio=Decimal("0"),
+            min_atr_bps=Decimal("0"),
+            min_close_location=Decimal("0"),
+        ),
+        candles,
+        Decimal("0"),
+    )
+
+    assert signal == "buy"
+    assert reason == "pullback_reclaimed_recent_low"
+    assert metrics["entry_style"] == "pullback_reclaim"
+    assert Decimal(metrics["close"]) > Decimal(metrics["reclaim_level"])
+
+
+def test_automation_pullback_reclaim_does_not_buy_high_breakout_without_pullback() -> None:
+    worker = AutomatedSimulationWorker(MarketState(["AAAUSDT"]), db=None)  # type: ignore[arg-type]
+    closes = [Decimal("100"), Decimal("102"), Decimal("104"), Decimal("103"), Decimal("106")]
+    candles = [_candle(index, close) for index, close in enumerate(closes)]
+    candles[-1]["open"] = Decimal("105")
+    candles[-1]["low"] = Decimal("105")
+
+    signal, reason, metrics = worker._compute_signal(
+        AutomationConfig(
+            symbol="AAAUSDT",
+            strategy="pullback_reclaim",
+            momentum_window=3,
+            trend_window=3,
+            breakout_bps=Decimal("0"),
+            min_trend_bps=Decimal("-100"),
+            min_volume_ratio=Decimal("0"),
+            min_atr_bps=Decimal("0"),
+            min_close_location=Decimal("0"),
+        ),
+        candles,
+        Decimal("0"),
+    )
+
+    assert signal == "hold"
+    assert reason == "no_pullback_reclaim_action"
+    assert Decimal(metrics["close"]) > Decimal(metrics["target_level"])
+
+
 @pytest.mark.asyncio
 async def test_position_manager_blocks_reentry_during_cooldown() -> None:
     worker = AutomatedSimulationWorker(MarketState(["AAAUSDT"]), db=None)  # type: ignore[arg-type]

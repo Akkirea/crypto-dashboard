@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Any, Callable, Literal
 
 
-StrategyName = Literal["sma_cross", "momentum_breakout"]
+StrategyName = Literal["sma_cross", "momentum_breakout", "pullback_reclaim"]
 
 
 @dataclass(frozen=True)
@@ -198,6 +198,114 @@ def run_momentum_breakout_backtest(
     return _result(ordered_candles, config, cash, quantity, realized_pnl, trades, equity_curve)
 
 
+def run_pullback_reclaim_backtest(
+    candles: list[dict[str, Any]],
+    config: BacktestConfig,
+) -> dict[str, Any]:
+    ordered_candles = _ordered_candles(candles)
+    if config.momentum_window <= 1:
+        raise ValueError("momentum_window must be greater than 1")
+    if config.breakout_bps < 0:
+        raise ValueError("breakout_bps must be non-negative")
+
+    cash = config.initial_cash
+    quantity = Decimal("0")
+    entry_price = Decimal("0")
+    realized_pnl = Decimal("0")
+    trades: list[dict[str, Any]] = []
+    equity_curve: list[dict[str, Any]] = []
+    fee_rate = config.fee_bps / Decimal("10000")
+    slippage_rate = config.slippage_bps / Decimal("10000")
+    reclaim_rate = config.breakout_bps / Decimal("10000")
+    support_level: Decimal | None = None
+    target_level: Decimal | None = None
+
+    for index, candle in enumerate(ordered_candles):
+        close = Decimal(str(candle["close"]))
+        if index < config.momentum_window:
+            equity_curve.append(_equity_point(candle["close_time"], cash + quantity * close, cash, quantity, close))
+            continue
+
+        prior_window = ordered_candles[index - config.momentum_window : index]
+        prior_low = min(Decimal(str(row["low"])) for row in prior_window)
+        prior_high = max(Decimal(str(row["high"])) for row in prior_window)
+        reclaim_level = prior_low * (Decimal("1") + reclaim_rate)
+        candle_low = Decimal(str(candle["low"]))
+        candle_open = Decimal(str(candle["open"]))
+
+        if quantity == 0 and candle_low <= reclaim_level and close > reclaim_level and close > candle_open:
+            fill_price = close * (Decimal("1") + slippage_rate)
+            quantity = cash / (fill_price * (Decimal("1") + fee_rate))
+            notional = quantity * fill_price
+            fee = notional * fee_rate
+            cash -= notional + fee
+            entry_price = fill_price
+            support_level = prior_low
+            target_level = prior_high
+            trades.append(
+                _trade(
+                    candle["close_time"],
+                    "buy",
+                    fill_price,
+                    quantity,
+                    fee,
+                    _slippage_cost(close, fill_price, quantity, "buy"),
+                    Decimal("0"),
+                    "pullback_reclaimed_recent_low",
+                )
+            )
+        elif quantity > 0 and target_level is not None and close >= target_level:
+            fill_price = close * (Decimal("1") - slippage_rate)
+            notional = quantity * fill_price
+            fee = notional * fee_rate
+            trade_pnl = (fill_price - entry_price) * quantity - fee
+            realized_pnl += trade_pnl
+            cash += notional - fee
+            trades.append(
+                _trade(
+                    candle["close_time"],
+                    "sell",
+                    fill_price,
+                    quantity,
+                    fee,
+                    _slippage_cost(close, fill_price, quantity, "sell"),
+                    trade_pnl,
+                    "prior_high_take_profit",
+                )
+            )
+            quantity = Decimal("0")
+            entry_price = Decimal("0")
+            support_level = None
+            target_level = None
+        elif quantity > 0 and support_level is not None and close < support_level:
+            fill_price = close * (Decimal("1") - slippage_rate)
+            notional = quantity * fill_price
+            fee = notional * fee_rate
+            trade_pnl = (fill_price - entry_price) * quantity - fee
+            realized_pnl += trade_pnl
+            cash += notional - fee
+            trades.append(
+                _trade(
+                    candle["close_time"],
+                    "sell",
+                    fill_price,
+                    quantity,
+                    fee,
+                    _slippage_cost(close, fill_price, quantity, "sell"),
+                    trade_pnl,
+                    "support_level_lost",
+                )
+            )
+            quantity = Decimal("0")
+            entry_price = Decimal("0")
+            support_level = None
+            target_level = None
+
+        equity_curve.append(_equity_point(candle["close_time"], cash + quantity * close, cash, quantity, close))
+
+    return _result(ordered_candles, config, cash, quantity, realized_pnl, trades, equity_curve)
+
+
 def strategy_definitions() -> list[dict[str, Any]]:
     return [
         {
@@ -290,7 +398,7 @@ def _parameters(config: BacktestConfig) -> dict[str, float | int]:
         "slippage_bps": float(config.slippage_bps),
         "initial_cash": float(config.initial_cash),
     }
-    if config.strategy == "momentum_breakout":
+    if config.strategy in {"momentum_breakout", "pullback_reclaim"}:
         parameters.update(
             {
                 "momentum_window": config.momentum_window,
@@ -420,5 +528,22 @@ BACKTEST_STRATEGIES: dict[StrategyName, StrategyDefinition] = {
         },
         required_lookback=lambda config: max(config.momentum_window, config.exit_window),
         runner=run_momentum_breakout_backtest,
+    ),
+    "pullback_reclaim": StrategyDefinition(
+        name="pullback_reclaim",
+        label="Pullback Reclaim",
+        description=(
+            "Long-only pullback strategy that buys when price trades near a recent "
+            "window low and closes back above that support reclaim level, then exits "
+            "into the prior high or when support fails."
+        ),
+        parameters={
+            "momentum_window": {"default": 12, "min": 3, "max": 500},
+            "breakout_bps": {"default": 5, "min": 0, "max": 1000},
+            "exit_window": {"default": 4, "min": 2, "max": 200},
+            "limit": {"default": 500, "min": 50, "max": 2000},
+        },
+        required_lookback=lambda config: max(config.momentum_window, config.exit_window),
+        runner=run_pullback_reclaim_backtest,
     ),
 }

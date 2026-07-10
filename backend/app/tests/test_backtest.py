@@ -8,6 +8,7 @@ from app.simulation.backtest import (
     required_lookback,
     run_backtest,
     run_momentum_breakout_backtest,
+    run_pullback_reclaim_backtest,
     run_sma_cross_backtest,
     strategy_definitions,
 )
@@ -77,7 +78,9 @@ def test_strategy_registry_exposes_sma_and_momentum_definitions() -> None:
 
     assert "sma_cross" in definitions
     assert "momentum_breakout" in definitions
+    assert "pullback_reclaim" in definitions
     assert definitions["momentum_breakout"]["parameters"]["momentum_window"]["default"] == 20
+    assert definitions["pullback_reclaim"]["parameters"]["breakout_bps"]["default"] == 5
 
 
 def test_momentum_breakout_backtest_produces_trades_and_extended_metrics() -> None:
@@ -113,6 +116,43 @@ def test_momentum_breakout_backtest_produces_trades_and_extended_metrics() -> No
     assert result["summary"]["alpha_vs_buy_hold_pct"] is not None
 
 
+def test_pullback_reclaim_backtest_buys_support_reclaim_and_sells_upswing() -> None:
+    candles = [_candle(index, close) for index, close in enumerate([
+        Decimal("100"),
+        Decimal("102"),
+        Decimal("104"),
+        Decimal("103"),
+        Decimal("101"),
+        Decimal("102"),
+        Decimal("105"),
+    ])]
+    candles[4]["low"] = Decimal("99.8")
+    candles[4]["open"] = Decimal("100.2")
+    candles[4]["close"] = Decimal("101.2")
+    candles[6]["close"] = Decimal("106")
+    candles[6]["high"] = Decimal("107")
+
+    result = run_pullback_reclaim_backtest(
+        candles,
+        BacktestConfig(
+            symbol="AAAUSDT",
+            strategy="pullback_reclaim",
+            initial_cash=Decimal("10000"),
+            momentum_window=3,
+            breakout_bps=Decimal("0"),
+            fee_bps=Decimal("0"),
+            slippage_bps=Decimal("0"),
+        ),
+    )
+
+    assert result["strategy"] == "pullback_reclaim"
+    assert result["trades"][0]["side"] == "buy"
+    assert result["trades"][0]["reason"] == "pullback_reclaimed_recent_low"
+    assert result["trades"][1]["side"] == "sell"
+    assert result["trades"][1]["reason"] == "prior_high_take_profit"
+    assert result["summary"]["closed_trade_count"] == 1
+
+
 def test_run_backtest_dispatches_using_registry() -> None:
     result = run_backtest(
         [_candle(index, Decimal(100 + index)) for index in range(10)],
@@ -121,3 +161,4 @@ def test_run_backtest_dispatches_using_registry() -> None:
 
     assert result["strategy"] == "momentum_breakout"
     assert required_lookback(BacktestConfig(symbol="AAAUSDT", strategy="momentum_breakout")) == 20
+    assert required_lookback(BacktestConfig(symbol="AAAUSDT", strategy="pullback_reclaim")) == 20

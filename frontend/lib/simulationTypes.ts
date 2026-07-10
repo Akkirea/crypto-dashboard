@@ -1,4 +1,4 @@
-export type BacktestStrategy = "sma_cross" | "momentum_breakout";
+export type BacktestStrategy = "sma_cross" | "momentum_breakout" | "pullback_reclaim";
 export type SimulationInterval = "1m" | "5m" | "15m" | "1h";
 
 export type SimulationConfig = {

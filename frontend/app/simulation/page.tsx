@@ -1344,7 +1344,8 @@ function BacktestPanel({
         ))}
         {([
           ["sma_cross", "SMA Crossover"],
-          ["momentum_breakout", "Momentum Breakout"]
+          ["momentum_breakout", "Momentum Breakout"],
+          ["pullback_reclaim", "Pullback Reclaim"]
         ] as Array<[BacktestStrategy, string]>).map(([item, label]) => (
           <button
             key={item}
@@ -1369,8 +1370,16 @@ function BacktestPanel({
           </>
         ) : (
           <>
-            <BacktestInput label="Momentum Window" value={momentumWindow} onChange={onMomentumWindowChange} />
-            <BacktestInput label="Breakout bps" value={breakoutBps} onChange={onBreakoutBpsChange} />
+            <BacktestInput
+              label={strategy === "pullback_reclaim" ? "Support Window" : "Momentum Window"}
+              value={momentumWindow}
+              onChange={onMomentumWindowChange}
+            />
+            <BacktestInput
+              label={strategy === "pullback_reclaim" ? "Reclaim bps" : "Breakout bps"}
+              value={breakoutBps}
+              onChange={onBreakoutBpsChange}
+            />
             <BacktestInput label="Exit Window" value={exitWindow} onChange={onExitWindowChange} />
           </>
         )}

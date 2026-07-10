@@ -96,7 +96,7 @@ class AutomatedSimulationWorker:
                 raise ValueError(f"unsupported symbol: {config.symbol}")
             if config.mode not in {"exploration", "candidate"}:
                 raise ValueError(f"unsupported automation mode: {config.mode}")
-            if config.strategy not in {"sma_cross", "momentum_breakout"}:
+            if config.strategy not in {"sma_cross", "momentum_breakout", "pullback_reclaim"}:
                 raise ValueError(f"unsupported strategy: {config.strategy}")
             if config.notional <= 0:
                 raise ValueError("notional must be positive")
@@ -528,6 +528,37 @@ class AutomatedSimulationWorker:
             "required_move_bps": str(required_move_bps),
             "automation_mode": config.mode,
         }
+        if config.strategy == "pullback_reclaim":
+            candle_open = Decimal(str(candles[-1]["open"]))
+            prior_low = min(Decimal(str(row["low"])) for row in prior)
+            reclaim_level = prior_low * (Decimal("1") + config.breakout_bps / Decimal("10000"))
+            target_level = prior_high
+            metrics.update(
+                {
+                    "prior_low": str(prior_low),
+                    "support_level": str(prior_low),
+                    "reclaim_level": str(reclaim_level),
+                    "target_level": str(target_level),
+                    "invalidation_level": str(prior_low),
+                    "entry_style": "pullback_reclaim",
+                }
+            )
+            if position_qty <= 0 and candle_low <= reclaim_level and close > reclaim_level and close > candle_open:
+                if trend_bps < config.min_trend_bps:
+                    return "hold", "trend_filter_failed", metrics
+                if atr_bps < config.min_atr_bps:
+                    return "hold", "volatility_filter_failed", metrics
+                if close_location < config.min_close_location:
+                    return "hold", "weak_candle_close_location", metrics
+                if volume_ratio < config.min_volume_ratio:
+                    return "hold", "volume_confirmation_failed", metrics
+                return "buy", "pullback_reclaimed_recent_low", metrics
+            if position_qty > 0 and close >= target_level:
+                return "sell", "prior_high_take_profit", metrics
+            if position_qty > 0 and close < prior_low:
+                return "sell", "support_level_lost", metrics
+            return "hold", "no_pullback_reclaim_action", metrics
+
         if position_qty <= 0 and close > breakout_level:
             if trend_bps < config.min_trend_bps:
                 return "hold", "trend_filter_failed", metrics
