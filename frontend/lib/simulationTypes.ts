@@ -12,7 +12,9 @@ export type SimulationConfig = {
   default_exchange: string;
   fill_model: {
     price_source: string;
-    fee_bps: number;
+    fee_bps?: number;
+    taker_fee_bps?: number;
+    maker_fee_bps?: number;
     slippage_bps: number;
     latency_ms: number;
   };
@@ -117,10 +119,11 @@ export type SimulationOrder = {
   exchange: string;
   symbol: string;
   side: "buy" | "sell";
-  order_type: "market";
+  order_type: "market" | "limit";
   status: "submitted" | "filled" | "rejected" | "cancelled";
   requested_quantity: string | number;
   filled_quantity: string | number;
+  limit_price?: string | number | null;
   fill_price: string | number | null;
   fee: string | number;
   submitted_at: string;
@@ -266,6 +269,7 @@ export type AutomationStatus = {
     max_fee_burn_per_day: string | number;
     pause_after_loss_streak: number;
     profit_only_exits: boolean;
+    min_reward_to_cost?: string | number;
     experiment_id: number | null;
   };
   last_signal: AutomationSignal | null;
@@ -280,7 +284,7 @@ export type AutomationSignal = {
   symbol: string;
   strategy: BacktestStrategy;
   signal: "buy" | "sell" | "hold";
-  status: "executed" | "rejected" | "skipped" | "observed";
+  status: "executed" | "submitted" | "rejected" | "skipped" | "observed";
   reason: string | null;
   candle_time: string | null;
   order_id: number | null;

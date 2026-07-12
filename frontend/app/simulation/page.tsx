@@ -71,6 +71,7 @@ const AUTOMATION_PRESETS: Record<
       max_fee_burn_per_day: number;
       pause_after_loss_streak: number;
       profit_only_exits: boolean;
+      min_reward_to_cost: number;
     };
   }
 > = {
@@ -107,7 +108,8 @@ const AUTOMATION_PRESETS: Record<
       max_trades_per_day: 40,
       max_fee_burn_per_day: 8,
       pause_after_loss_streak: 6,
-      profit_only_exits: false
+      profit_only_exits: false,
+      min_reward_to_cost: 1.5
     }
   },
   candidate: {
@@ -143,7 +145,8 @@ const AUTOMATION_PRESETS: Record<
       max_trades_per_day: 8,
       max_fee_burn_per_day: 5,
       pause_after_loss_streak: 3,
-      profit_only_exits: false
+      profit_only_exits: false,
+      min_reward_to_cost: 3
     }
   }
 };
@@ -159,15 +162,17 @@ export default function SimulationPage() {
   const [trades, setTrades] = useState<SimulationTrade[]>([]);
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [side, setSide] = useState<"buy" | "sell">("buy");
+  const [orderType, setOrderType] = useState<"market" | "limit">("market");
   const [quantity, setQuantity] = useState("0.001");
+  const [limitPrice, setLimitPrice] = useState("");
   const [backtest, setBacktest] = useState<BacktestResult | null>(null);
   const [backtestRuns, setBacktestRuns] = useState<BacktestRunSummary[]>([]);
   const [experiments, setExperiments] = useState<SimulationExperiment[]>([]);
   const [automation, setAutomation] = useState<AutomationStatus | null>(null);
   const [automationSignals, setAutomationSignals] = useState<AutomationSignal[]>([]);
-  const [automationMode, setAutomationMode] = useState<AutomationMode>("exploration");
+  const [automationMode, setAutomationMode] = useState<AutomationMode>("candidate");
   const [strategyInterval, setStrategyInterval] = useState<SimulationInterval>("5m");
-  const [backtestStrategy, setBacktestStrategy] = useState<BacktestStrategy>("momentum_breakout");
+  const [backtestStrategy, setBacktestStrategy] = useState<BacktestStrategy>("pullback_reclaim");
   const [shortWindow, setShortWindow] = useState("5");
   const [longWindow, setLongWindow] = useState("20");
   const [momentumWindow, setMomentumWindow] = useState("20");
@@ -309,7 +314,13 @@ export default function SimulationPage() {
       const response = await fetch(`${backendHttpUrl()}/api/simulation/orders`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ symbol, side, quantity })
+        body: JSON.stringify({
+          symbol,
+          side,
+          quantity,
+          order_type: orderType,
+          ...(orderType === "limit" ? { limit_price: limitPrice } : {})
+        })
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = (await response.json()) as SimulationOrder;
@@ -459,7 +470,8 @@ export default function SimulationPage() {
           max_trades_per_day: preset.payload.max_trades_per_day,
           max_fee_burn_per_day: preset.payload.max_fee_burn_per_day,
           pause_after_loss_streak: preset.payload.pause_after_loss_streak,
-          profit_only_exits: preset.payload.profit_only_exits
+          profit_only_exits: preset.payload.profit_only_exits,
+          min_reward_to_cost: preset.payload.min_reward_to_cost
         })
       });
       if (!response.ok) {
@@ -580,12 +592,16 @@ export default function SimulationPage() {
               symbols={config?.symbols ?? ["BTCUSDT", "ETHUSDT", "SOLUSDT"]}
               symbol={symbol}
               side={side}
+              orderType={orderType}
               quantity={quantity}
+              limitPrice={limitPrice}
               positionQuantity={fmtPrice(toNumber(selectedPosition?.quantity))}
               submitting={submitting}
               onSymbolChange={setSymbol}
               onSideChange={setSide}
+              onOrderTypeChange={setOrderType}
               onQuantityChange={setQuantity}
+              onLimitPriceChange={setLimitPrice}
               onSubmit={submitOrder}
               onReset={resetPortfolio}
             />
@@ -692,7 +708,7 @@ function MonitorPanel({
       <section className="mt-3 grid gap-3 md:grid-cols-4">
         <Metric label="Expectancy" value={`$${fmtPrice(toNumber(experiment?.scorecard?.expectancy_per_trade))}`} detail={`${experiment?.pnl.winning_trade_count ?? 0}W / ${experiment?.pnl.losing_trade_count ?? 0}L`} />
         <Metric label="Profit Factor" value={fmtPrice(toNumber(experiment?.pnl.profit_factor))} detail={`${fmtPrice(toNumber(experiment?.scorecard?.fee_drag_pct))}% fee drag`} />
-        <Metric label="Entry Filter" value={`${fmtPrice(toNumber(automation?.config.min_expected_move_bps))} bps`} detail={`Vol ${fmtPrice(toNumber(automation?.config.min_volume_ratio))}x · Trend ${fmtPrice(toNumber(automation?.config.min_trend_bps))} bps`} />
+        <Metric label="Cost Gate" value={`${fmtPrice(toNumber(automation?.config.min_reward_to_cost))}x`} detail={`Move ${fmtPrice(toNumber(automation?.config.min_expected_move_bps))} bps · Vol ${fmtPrice(toNumber(automation?.config.min_volume_ratio))}x`} />
         <Metric label="Risk Mode" value={automation?.config.profit_only_exits ? "Profit-only" : "Invalidation"} detail={`${automation?.config.max_trades_per_day ?? "—"} trades/day`} />
       </section>
     </section>
@@ -704,12 +720,16 @@ function ManualOrderPanel({
   symbols,
   symbol,
   side,
+  orderType,
   quantity,
+  limitPrice,
   positionQuantity,
   submitting,
   onSymbolChange,
   onSideChange,
+  onOrderTypeChange,
   onQuantityChange,
+  onLimitPriceChange,
   onSubmit,
   onReset
 }: {
@@ -717,15 +737,22 @@ function ManualOrderPanel({
   symbols: string[];
   symbol: string;
   side: "buy" | "sell";
+  orderType: "market" | "limit";
   quantity: string;
+  limitPrice: string;
   positionQuantity: string;
   submitting: boolean;
   onSymbolChange: (value: string) => void;
   onSideChange: (value: "buy" | "sell") => void;
+  onOrderTypeChange: (value: "market" | "limit") => void;
   onQuantityChange: (value: string) => void;
+  onLimitPriceChange: (value: string) => void;
   onSubmit: () => void;
   onReset: () => void;
 }) {
+  const takerFee = config?.fill_model.taker_fee_bps ?? config?.fill_model.fee_bps ?? "—";
+  const makerFee = config?.fill_model.maker_fee_bps ?? "—";
+
   return (
     <section className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
       <section className="rounded-lg border border-line bg-panel/90 p-4">
@@ -735,7 +762,8 @@ function ManualOrderPanel({
         </div>
         <div className="mb-4 space-y-3 text-sm">
           <Row label="Price source" value={config?.fill_model.price_source ?? "—"} />
-          <Row label="Fee" value={`${config?.fill_model.fee_bps ?? "—"} bps`} />
+          <Row label="Taker fee" value={`${takerFee} bps`} />
+          <Row label="Maker fee" value={`${makerFee} bps`} />
           <Row label="Slippage" value={`${config?.fill_model.slippage_bps ?? "—"} bps`} />
           <Row label="Latency" value={`${config?.fill_model.latency_ms ?? "—"} ms`} />
           <Row label="Position" value={positionQuantity} />
@@ -757,6 +785,22 @@ function ManualOrderPanel({
       </section>
 
       <section className="rounded-lg border border-line bg-panel/90 p-4">
+        <div className="mb-3 grid grid-cols-2 gap-2">
+          {(["market", "limit"] as const).map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => onOrderTypeChange(item)}
+              className={`h-10 rounded-lg border text-sm font-medium capitalize ${
+                orderType === item
+                  ? "border-gold/50 bg-gold/20 text-white"
+                  : "border-white/10 bg-white/[0.05] text-muted hover:text-white"
+              }`}
+            >
+              {item}
+            </button>
+          ))}
+        </div>
         <div className="grid grid-cols-2 gap-2">
           {(["buy", "sell"] as const).map((item) => (
             <button
@@ -784,6 +828,18 @@ function ManualOrderPanel({
             inputMode="decimal"
           />
         </label>
+        {orderType === "limit" ? (
+          <label className="mt-4 block text-xs text-muted">
+            Limit price
+            <input
+              value={limitPrice}
+              onChange={(event) => onLimitPriceChange(event.target.value)}
+              className="mt-2 h-10 w-full rounded-lg border border-white/10 bg-black/30 px-3 text-sm text-white outline-none focus:border-gold/50"
+              inputMode="decimal"
+              placeholder="e.g. 64000"
+            />
+          </label>
+        ) : null}
         <div className="mt-4 grid gap-2 sm:grid-cols-2">
           <button
             type="button"
@@ -893,7 +949,7 @@ function PaperOrders({ orders, title = "Orders" }: { orders: SimulationOrder[]; 
         <span>Side</span>
         <span>Symbol</span>
         <span className="text-right">Status</span>
-        <span className="text-right">Fill</span>
+        <span className="text-right">Price</span>
       </div>
       {orders.length ? (
         orders.slice(0, 10).map((order) => (
@@ -902,9 +958,15 @@ function PaperOrders({ orders, title = "Orders" }: { orders: SimulationOrder[]; 
               <span className={order.side === "buy" ? "text-buy" : "text-sell"}>{order.side}</span>
               <span className="font-medium text-white sm:hidden">{order.symbol}</span>
             </div>
-            <span className="hidden font-medium text-white sm:block">{order.symbol}</span>
+            <span className="hidden font-medium text-white sm:block">
+              {order.symbol}
+              <span className="ml-2 text-xs font-normal text-muted">{order.order_type}</span>
+            </span>
             <MobileField label="Status" value={order.status} valueClassName="text-muted" />
-            <MobileField label="Fill" value={fmtPrice(toNumber(order.fill_price))} />
+            <MobileField
+              label={order.status === "submitted" ? "Limit" : "Fill"}
+              value={fmtPrice(toNumber(order.fill_price ?? order.limit_price))}
+            />
           </div>
         ))
       ) : (
@@ -1047,6 +1109,10 @@ function AutomationPanel({
                   <div className="text-muted">Max/day</div>
                   <div className="mt-1 text-white">{preset.payload.max_trades_per_day}</div>
                 </div>
+                <div className="rounded-md bg-black/20 p-2">
+                  <div className="text-muted">Cost gate</div>
+                  <div className="mt-1 text-white">{preset.payload.min_reward_to_cost}x</div>
+                </div>
               </div>
             </button>
           );
@@ -1058,7 +1124,7 @@ function AutomationPanel({
         <Metric label="Strategy" value={config?.strategy ?? "—"} detail={`${config?.mode ?? selectedMode} · ${config?.symbol ?? "—"}`} />
         <Metric label="Notional" value={`$${fmtPrice(toNumber(config?.notional))}`} detail={`Cap $${fmtPrice(toNumber(config?.max_position_notional))}`} />
         <Metric label="Poll" value={`${fmtPrice(toNumber(config?.poll_seconds))}s`} detail={config?.interval ?? "—"} />
-        <Metric label="Entry Filter" value={`${fmtPrice(toNumber(config?.min_expected_move_bps))} bps`} detail={`Vol ${fmtPrice(toNumber(config?.min_volume_ratio))}x · Close ${fmtPrice(toNumber(config?.min_close_location))}`} />
+        <Metric label="Cost Gate" value={`${fmtPrice(toNumber(config?.min_reward_to_cost))}x`} detail={`Move ${fmtPrice(toNumber(config?.min_expected_move_bps))} bps · Close ${fmtPrice(toNumber(config?.min_close_location))}`} />
       </section>
 
       <section className="mb-4 grid gap-3 md:grid-cols-5">

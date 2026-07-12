@@ -318,7 +318,8 @@ class AutomatedSimulationWorker:
                     candle["close_time"],
                     {**metrics, "current_notional": str(current_notional)},
                 )
-            quantity = available_notional / ask_price
+            limit_entry_price = _limit_entry_price(config, metrics)
+            quantity = available_notional / (limit_entry_price or ask_price)
         else:
             if position_qty <= 0:
                 return await self._record_signal(
@@ -346,25 +347,50 @@ class AutomatedSimulationWorker:
                 )
             quantity = min(position_qty, experiment_qty)
 
-        order = await self.db.create_simulation_market_order(
-            experiment_id=config.experiment_id,
-            portfolio_id=config.portfolio_id,
-            exchange=config.exchange,
-            symbol=config.symbol,
-            side=side,
-            quantity=quantity,
-            bid_price=bid_price,
-            ask_price=ask_price,
-            payload={
-                "source": "automated_simulation",
-                "strategy": config.strategy,
-                "experiment_id": config.experiment_id,
-                "signal_reason": reason,
-                "signal_metrics": metrics,
-                "read_only": True,
-            },
-        )
-        status = "executed" if order.get("status") == "filled" else "rejected"
+        order_payload = {
+            "source": "automated_simulation",
+            "strategy": config.strategy,
+            "experiment_id": config.experiment_id,
+            "signal_reason": reason,
+            "signal_metrics": metrics,
+            "read_only": True,
+        }
+        limit_entry_price = _limit_entry_price(config, metrics) if side == "buy" else None
+        if limit_entry_price is not None:
+            order = await self.db.create_simulation_limit_order(
+                experiment_id=config.experiment_id,
+                portfolio_id=config.portfolio_id,
+                exchange=config.exchange,
+                symbol=config.symbol,
+                side=side,
+                quantity=quantity,
+                limit_price=limit_entry_price,
+                bid_price=bid_price,
+                ask_price=ask_price,
+                payload={
+                    **order_payload,
+                    "execution_preference": "maker_limit_entry",
+                    "limit_price": str(limit_entry_price),
+                },
+            )
+        else:
+            order = await self.db.create_simulation_market_order(
+                experiment_id=config.experiment_id,
+                portfolio_id=config.portfolio_id,
+                exchange=config.exchange,
+                symbol=config.symbol,
+                side=side,
+                quantity=quantity,
+                bid_price=bid_price,
+                ask_price=ask_price,
+                payload=order_payload,
+            )
+        if order.get("status") == "filled":
+            status = "executed"
+        elif order.get("status") == "submitted":
+            status = "submitted"
+        else:
+            status = "rejected"
         if status == "executed":
             self._update_position_state_after_fill(
                 config=config,
@@ -926,3 +952,14 @@ def _estimated_round_trip_cost_bps() -> Decimal:
     fee_bps = Decimal(str(settings.simulation_fee_bps))
     slippage_bps = Decimal(str(settings.simulation_slippage_bps))
     return fee_bps * Decimal("2") + slippage_bps * Decimal("2")
+
+
+def _limit_entry_price(config: AutomationConfig, metrics: dict[str, Any]) -> Optional[Decimal]:
+    if config.strategy != "pullback_reclaim":
+        return None
+    reclaim_level = metrics.get("reclaim_level")
+    close = metrics.get("close")
+    if reclaim_level is None or close is None:
+        return None
+    limit_price = min(Decimal(str(reclaim_level)), Decimal(str(close)))
+    return limit_price if limit_price > 0 else None
