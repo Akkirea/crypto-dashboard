@@ -313,12 +313,13 @@ class Database:
                   exchange TEXT NOT NULL,
                   symbol TEXT NOT NULL,
                   side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
-                  order_type TEXT NOT NULL CHECK (order_type IN ('market')),
+                  order_type TEXT NOT NULL CHECK (order_type IN ('market', 'limit')),
                   status TEXT NOT NULL CHECK (
                     status IN ('submitted', 'filled', 'rejected', 'cancelled')
                   ),
                   requested_quantity NUMERIC(30, 8) NOT NULL,
                   filled_quantity NUMERIC(30, 8) NOT NULL DEFAULT 0,
+                  limit_price NUMERIC(30, 8),
                   fill_price NUMERIC(30, 8),
                   fee NUMERIC(30, 8) NOT NULL DEFAULT 0,
                   submitted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -329,6 +330,10 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_simulation_orders_portfolio_time
                 ON simulation_orders(portfolio_id, submitted_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_simulation_orders_submitted
+                ON simulation_orders(portfolio_id, exchange, symbol, submitted_at)
+                WHERE status = 'submitted';
 
                 CREATE TABLE IF NOT EXISTS simulation_fills (
                   id BIGSERIAL PRIMARY KEY,
@@ -457,6 +462,29 @@ class Database:
                 ALTER TABLE simulation_orders
                 ADD COLUMN IF NOT EXISTS experiment_id BIGINT REFERENCES simulation_experiments(id);
 
+                ALTER TABLE simulation_orders
+                ADD COLUMN IF NOT EXISTS limit_price NUMERIC(30, 8);
+
+                DO $$
+                DECLARE
+                  constraint_name text;
+                BEGIN
+                  SELECT conname INTO constraint_name
+                  FROM pg_constraint
+                  WHERE conrelid = 'simulation_orders'::regclass
+                    AND contype = 'c'
+                    AND pg_get_constraintdef(oid) LIKE '%order_type%'
+                  LIMIT 1;
+
+                  IF constraint_name IS NOT NULL THEN
+                    EXECUTE format('ALTER TABLE simulation_orders DROP CONSTRAINT %I', constraint_name);
+                  END IF;
+
+                  ALTER TABLE simulation_orders
+                  ADD CONSTRAINT simulation_orders_order_type_check
+                  CHECK (order_type IN ('market', 'limit'));
+                END $$;
+
                 ALTER TABLE simulation_fills
                 ADD COLUMN IF NOT EXISTS experiment_id BIGINT REFERENCES simulation_experiments(id);
 
@@ -465,6 +493,10 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_simulation_orders_experiment_time
                 ON simulation_orders(experiment_id, submitted_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_simulation_orders_submitted
+                ON simulation_orders(portfolio_id, exchange, symbol, submitted_at)
+                WHERE status = 'submitted';
 
                 CREATE INDEX IF NOT EXISTS idx_simulation_fills_experiment_time
                 ON simulation_fills(experiment_id, created_at DESC);
@@ -1155,7 +1187,7 @@ class Database:
         rows = await self.pool.fetch(
             """
             SELECT id, experiment_id, portfolio_id, exchange, symbol, side, order_type, status,
-                   requested_quantity, filled_quantity, fill_price, fee,
+                   requested_quantity, filled_quantity, limit_price, fill_price, fee,
                    submitted_at, filled_at, rejection_reason, payload
             FROM simulation_orders
             WHERE portfolio_id = $1
@@ -1555,6 +1587,7 @@ class Database:
         avg_entry = Decimal("0")
         entry_fee = Decimal("0")
         entry_time = None
+        entry_experiment_id: Optional[int | str] = None
         closed_trades: list[dict[str, Any]] = []
         unmatched_exits: list[dict[str, Any]] = []
 
@@ -1568,9 +1601,12 @@ class Database:
                     avg_entry = price
                     entry_fee = fee
                     entry_time = fill["created_at"]
+                    entry_experiment_id = fill.get("experiment_id")
                 else:
                     avg_entry = ((avg_entry * open_qty) + (price * quantity)) / (open_qty + quantity)
                     entry_fee += fee
+                    if entry_experiment_id != fill.get("experiment_id"):
+                        entry_experiment_id = "mixed"
                 open_qty += quantity
                 continue
 
@@ -1596,7 +1632,7 @@ class Database:
                 "fees": fees,
                 "net_pnl": net_pnl,
                 "return_pct": return_pct,
-                "entry_experiment_id": None,
+                "entry_experiment_id": entry_experiment_id,
                 "exit_experiment_id": fill.get("experiment_id"),
             }
             if experiment_id is None or fill.get("experiment_id") == experiment_id:
@@ -1607,6 +1643,7 @@ class Database:
                 avg_entry = Decimal("0")
                 entry_fee = Decimal("0")
                 entry_time = None
+                entry_experiment_id = None
 
         wins = [trade for trade in closed_trades if trade["net_pnl"] > 0]
         losses = [trade for trade in closed_trades if trade["net_pnl"] < 0]
@@ -1715,16 +1752,16 @@ class Database:
                     """
                     INSERT INTO simulation_orders(
                       experiment_id, portfolio_id, exchange, symbol, side, order_type, status,
-                      requested_quantity, filled_quantity, fill_price, fee,
+                      requested_quantity, filled_quantity, limit_price, fill_price, fee,
                       filled_at, rejection_reason, payload
                     )
                     VALUES (
-                      $1,$2,$3,$4,$5,'market',$6,$7,$8,$9,$10,
+                      $1,$2,$3,$4,$5,'market',$6,$7,$8,NULL,$9,$10,
                       CASE WHEN $6 = 'filled' THEN now() ELSE NULL END,
                       $11,$12::jsonb
                     )
                     RETURNING id, experiment_id, portfolio_id, exchange, symbol, side, order_type, status,
-                              requested_quantity, filled_quantity, fill_price, fee,
+                              requested_quantity, filled_quantity, limit_price, fill_price, fee,
                               submitted_at, filled_at, rejection_reason, payload
                     """,
                     experiment_id,
@@ -1807,6 +1844,316 @@ class Database:
                     realized_delta,
                 )
                 return _decode_json_fields(dict(order), "payload")
+
+    async def create_simulation_limit_order(
+        self,
+        *,
+        experiment_id: Optional[int] = None,
+        portfolio_id: str,
+        exchange: str,
+        symbol: str,
+        side: str,
+        quantity: Decimal,
+        limit_price: Decimal,
+        bid_price: Decimal,
+        ask_price: Decimal,
+        payload: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        if not self.pool:
+            return {"status": "rejected", "rejection_reason": "database unavailable"}
+        await self._ensure_simulation_portfolio(portfolio_id)
+        side = side.lower()
+        exchange = exchange.lower()
+        symbol = symbol.upper()
+        marketable = (side == "buy" and limit_price >= ask_price) or (
+            side == "sell" and limit_price <= bid_price
+        )
+        if marketable:
+            delegated_payload = {
+                **(payload or {}),
+                "requested_order_type": "limit",
+                "limit_price": str(limit_price),
+                "execution_note": "marketable_limit_filled_as_taker",
+            }
+            return await self.create_simulation_market_order(
+                experiment_id=experiment_id,
+                portfolio_id=portfolio_id,
+                exchange=exchange,
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                bid_price=bid_price,
+                ask_price=ask_price,
+                payload=delegated_payload,
+            )
+
+        maker_fee_rate = Decimal(str(settings.simulation_maker_fee_bps)) / Decimal("10000")
+        estimated_notional = limit_price * quantity
+        estimated_fee = estimated_notional * maker_fee_rate
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                portfolio = await conn.fetchrow(
+                    """
+                    SELECT cash_balance
+                    FROM simulation_portfolios
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    portfolio_id,
+                )
+                position = await conn.fetchrow(
+                    """
+                    SELECT quantity
+                    FROM simulation_positions
+                    WHERE portfolio_id = $1 AND exchange = $2 AND symbol = $3
+                    FOR UPDATE
+                    """,
+                    portfolio_id,
+                    exchange,
+                    symbol,
+                )
+                cash = Decimal(portfolio["cash_balance"])
+                old_qty = Decimal(position["quantity"]) if position else Decimal("0")
+                rejection_reason = None
+                if quantity <= 0:
+                    rejection_reason = "quantity must be positive"
+                elif limit_price <= 0:
+                    rejection_reason = "limit_price must be positive"
+                elif side == "buy" and cash < estimated_notional + estimated_fee:
+                    rejection_reason = "insufficient simulated cash"
+                elif side == "sell" and not settings.simulation_allow_short and old_qty < quantity:
+                    rejection_reason = "insufficient simulated position"
+
+                order = await conn.fetchrow(
+                    """
+                    INSERT INTO simulation_orders(
+                      experiment_id, portfolio_id, exchange, symbol, side, order_type, status,
+                      requested_quantity, filled_quantity, limit_price, fill_price, fee,
+                      rejection_reason, payload
+                    )
+                    VALUES ($1,$2,$3,$4,$5,'limit',$6,$7,0,$8,NULL,0,$9,$10::jsonb)
+                    RETURNING id, experiment_id, portfolio_id, exchange, symbol, side, order_type, status,
+                              requested_quantity, filled_quantity, limit_price, fill_price, fee,
+                              submitted_at, filled_at, rejection_reason, payload
+                    """,
+                    experiment_id,
+                    portfolio_id,
+                    exchange,
+                    symbol,
+                    side,
+                    "rejected" if rejection_reason else "submitted",
+                    quantity,
+                    limit_price,
+                    rejection_reason,
+                    json.dumps(
+                        {
+                            **(payload or {}),
+                            "execution_note": "resting_simulated_limit_order",
+                            "estimated_maker_fee": str(estimated_fee),
+                        },
+                        default=_json_default,
+                    ),
+                )
+                return _decode_json_fields(dict(order), "payload")
+
+    async def process_simulation_limit_orders(
+        self,
+        *,
+        portfolio_id: str,
+        exchange: str,
+        symbol: str,
+        bid_price: Decimal,
+        ask_price: Decimal,
+        limit: int = 25,
+    ) -> list[dict[str, Any]]:
+        if not self.pool:
+            return []
+        exchange = exchange.lower()
+        symbol = symbol.upper()
+        async with self.pool.acquire() as conn:
+            orders = await conn.fetch(
+                """
+                SELECT id
+                FROM simulation_orders
+                WHERE portfolio_id = $1
+                  AND exchange = $2
+                  AND symbol = $3
+                  AND order_type = 'limit'
+                  AND status = 'submitted'
+                  AND (
+                    (side = 'buy' AND limit_price >= $4)
+                    OR (side = 'sell' AND limit_price <= $5)
+                  )
+                ORDER BY submitted_at
+                LIMIT $6
+                """,
+                portfolio_id,
+                exchange,
+                symbol,
+                ask_price,
+                bid_price,
+                limit,
+            )
+        filled: list[dict[str, Any]] = []
+        for order in orders:
+            result = await self._fill_submitted_limit_order(int(order["id"]))
+            if result is not None:
+                filled.append(result)
+        return filled
+
+    async def _fill_submitted_limit_order(self, order_id: int) -> Optional[dict[str, Any]]:
+        if not self.pool:
+            return None
+        maker_fee_rate = Decimal(str(settings.simulation_maker_fee_bps)) / Decimal("10000")
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                order = await conn.fetchrow(
+                    """
+                    SELECT id, experiment_id, portfolio_id, exchange, symbol, side,
+                           requested_quantity, limit_price, payload
+                    FROM simulation_orders
+                    WHERE id = $1 AND order_type = 'limit' AND status = 'submitted'
+                    FOR UPDATE
+                    """,
+                    order_id,
+                )
+                if not order:
+                    return None
+                portfolio = await conn.fetchrow(
+                    """
+                    SELECT cash_balance
+                    FROM simulation_portfolios
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    order["portfolio_id"],
+                )
+                position = await conn.fetchrow(
+                    """
+                    SELECT quantity, avg_entry_price, realized_pnl
+                    FROM simulation_positions
+                    WHERE portfolio_id = $1 AND exchange = $2 AND symbol = $3
+                    FOR UPDATE
+                    """,
+                    order["portfolio_id"],
+                    order["exchange"],
+                    order["symbol"],
+                )
+                side = order["side"]
+                quantity = Decimal(order["requested_quantity"])
+                fill_price = Decimal(order["limit_price"])
+                notional = fill_price * quantity
+                fee = notional * maker_fee_rate
+                cash = Decimal(portfolio["cash_balance"])
+                old_qty = Decimal(position["quantity"]) if position else Decimal("0")
+                old_avg = Decimal(position["avg_entry_price"]) if position else Decimal("0")
+                old_realized = Decimal(position["realized_pnl"]) if position else Decimal("0")
+
+                rejection_reason = None
+                if side == "buy" and cash < notional + fee:
+                    rejection_reason = "insufficient simulated cash at limit fill"
+                elif side == "sell" and not settings.simulation_allow_short and old_qty < quantity:
+                    rejection_reason = "insufficient simulated position at limit fill"
+                if rejection_reason:
+                    rejected = await conn.fetchrow(
+                        """
+                        UPDATE simulation_orders
+                        SET status = 'rejected',
+                            rejection_reason = $2
+                        WHERE id = $1
+                        RETURNING id, experiment_id, portfolio_id, exchange, symbol, side,
+                                  order_type, status, requested_quantity, filled_quantity,
+                                  limit_price, fill_price, fee, submitted_at, filled_at,
+                                  rejection_reason, payload
+                        """,
+                        order_id,
+                        rejection_reason,
+                    )
+                    return _decode_json_fields(dict(rejected), "payload") if rejected else None
+
+                if side == "buy":
+                    new_cash = cash - notional - fee
+                    new_qty = old_qty + quantity
+                    new_avg = ((old_qty * old_avg) + (quantity * fill_price)) / new_qty
+                    realized_delta = Decimal("0")
+                else:
+                    new_cash = cash + notional - fee
+                    new_qty = old_qty - quantity
+                    new_avg = Decimal("0") if new_qty == 0 else old_avg
+                    realized_delta = (fill_price - old_avg) * quantity
+
+                filled_order = await conn.fetchrow(
+                    """
+                    UPDATE simulation_orders
+                    SET status = 'filled',
+                        filled_quantity = requested_quantity,
+                        fill_price = limit_price,
+                        fee = $2,
+                        filled_at = now(),
+                        payload = payload || $3::jsonb
+                    WHERE id = $1
+                    RETURNING id, experiment_id, portfolio_id, exchange, symbol, side,
+                              order_type, status, requested_quantity, filled_quantity,
+                              limit_price, fill_price, fee, submitted_at, filled_at,
+                              rejection_reason, payload
+                    """,
+                    order_id,
+                    fee,
+                    json.dumps({"execution_note": "resting_limit_filled_as_maker"}),
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO simulation_fills(
+                      order_id, experiment_id, portfolio_id, exchange, symbol, side,
+                      price, quantity, notional, fee, liquidity
+                    )
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'maker')
+                    """,
+                    order_id,
+                    order["experiment_id"],
+                    order["portfolio_id"],
+                    order["exchange"],
+                    order["symbol"],
+                    side,
+                    fill_price,
+                    quantity,
+                    notional,
+                    fee,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO simulation_positions(
+                      portfolio_id, exchange, symbol, quantity, avg_entry_price, realized_pnl
+                    )
+                    VALUES ($1,$2,$3,$4,$5,$6)
+                    ON CONFLICT (portfolio_id, exchange, symbol)
+                    DO UPDATE SET
+                      quantity = EXCLUDED.quantity,
+                      avg_entry_price = EXCLUDED.avg_entry_price,
+                      realized_pnl = simulation_positions.realized_pnl + $7,
+                      updated_at = now()
+                    """,
+                    order["portfolio_id"],
+                    order["exchange"],
+                    order["symbol"],
+                    new_qty,
+                    new_avg,
+                    old_realized + realized_delta,
+                    realized_delta,
+                )
+                await conn.execute(
+                    """
+                    UPDATE simulation_portfolios
+                    SET cash_balance = $2,
+                        realized_pnl = realized_pnl + $3,
+                        updated_at = now()
+                    WHERE id = $1
+                    """,
+                    order["portfolio_id"],
+                    new_cash,
+                    realized_delta,
+                )
+                return _decode_json_fields(dict(filled_order), "payload") if filled_order else None
 
     async def reset_simulation_portfolio(self, portfolio_id: str = "default") -> None:
         if not self.pool:
@@ -2019,4 +2366,26 @@ class Database:
                         settings.retention_delete_limit,
                     )
                 deleted[table_name] = int(result.rsplit(" ", 1)[-1])
+            if settings.analytics_snapshots_max_rows_per_family > 0:
+                result = await conn.execute(
+                    """
+                    DELETE FROM analytics_snapshots
+                    WHERE id IN (
+                      SELECT id
+                      FROM (
+                        SELECT id,
+                               row_number() OVER (
+                                 PARTITION BY metric_family, COALESCE(metric_window, '')
+                                 ORDER BY computed_at DESC
+                               ) AS row_number
+                        FROM analytics_snapshots
+                      ) ranked
+                      WHERE row_number > $1
+                      LIMIT $2
+                    )
+                    """,
+                    settings.analytics_snapshots_max_rows_per_family,
+                    settings.retention_delete_limit,
+                )
+                deleted["analytics_snapshots_compacted"] = int(result.rsplit(" ", 1)[-1])
         return deleted

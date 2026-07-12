@@ -54,6 +54,7 @@ class AutomationConfig:
     max_fee_burn_per_day: Decimal = Decimal("5")
     pause_after_loss_streak: int = 3
     profit_only_exits: bool = False
+    min_reward_to_cost: Decimal = Decimal("3")
     experiment_id: Optional[int] = None
 
 
@@ -192,6 +193,7 @@ class AutomatedSimulationWorker:
         payload["max_spread_bps"] = str(config.max_spread_bps)
         payload["daily_max_loss"] = str(config.daily_max_loss)
         payload["max_fee_burn_per_day"] = str(config.max_fee_burn_per_day)
+        payload["min_reward_to_cost"] = str(config.min_reward_to_cost)
         return payload
 
     async def evaluate_once(self) -> Optional[dict[str, Any]]:
@@ -239,6 +241,16 @@ class AutomatedSimulationWorker:
             return None
         self._last_candle_key = candle_key
 
+        book = await self._book(config.symbol, config.exchange)
+        if book is not None:
+            await self.db.process_simulation_limit_orders(
+                portfolio_id=config.portfolio_id,
+                exchange=config.exchange,
+                symbol=config.symbol,
+                bid_price=Decimal(str(book["bid_price"])),
+                ask_price=Decimal(str(book["ask_price"])),
+            )
+
         portfolio = await self.db.fetch_simulation_portfolio(
             portfolio_id=config.portfolio_id,
             marks=self.state.latest_prices,
@@ -249,7 +261,6 @@ class AutomatedSimulationWorker:
         )
         position_qty = Decimal(str(position["quantity"])) if position else Decimal("0")
         raw_signal, raw_reason, metrics = self._compute_signal(config, candles, position_qty)
-        book = await self._book(config.symbol, config.exchange)
         signal, reason, metrics = await self._apply_position_manager(
             config=config,
             raw_signal=raw_signal,
@@ -501,14 +512,14 @@ class AutomatedSimulationWorker:
             max(config.min_take_profit_bps, atr_bps * config.atr_target_multiplier),
         )
         round_trip_cost_bps = _estimated_round_trip_cost_bps()
+        cost_multiple = max(Decimal("1.5"), config.min_reward_to_cost)
         if config.mode == "exploration":
-            required_move_bps = max(config.min_expected_move_bps, atr_bps * Decimal("0.25"))
-        else:
-            required_move_bps = max(
-                config.min_expected_move_bps,
-                round_trip_cost_bps + Decimal("10"),
-                atr_bps * Decimal("0.50"),
-            )
+            cost_multiple = max(Decimal("1.5"), config.min_reward_to_cost / Decimal("2"))
+        required_move_bps = max(
+            config.min_expected_move_bps,
+            round_trip_cost_bps * cost_multiple,
+            atr_bps * (Decimal("0.25") if config.mode == "exploration" else Decimal("0.50")),
+        )
         metrics = {
             "close": str(close),
             "prior_high": str(prior_high),
@@ -533,17 +544,23 @@ class AutomatedSimulationWorker:
             prior_low = min(Decimal(str(row["low"])) for row in prior)
             reclaim_level = prior_low * (Decimal("1") + config.breakout_bps / Decimal("10000"))
             target_level = prior_high
+            expected_move_bps = ((target_level - close) / close) * Decimal("10000") if close > 0 else Decimal("0")
+            projected_net_edge_bps = expected_move_bps - round_trip_cost_bps
             metrics.update(
                 {
                     "prior_low": str(prior_low),
                     "support_level": str(prior_low),
                     "reclaim_level": str(reclaim_level),
                     "target_level": str(target_level),
+                    "expected_move_bps": str(expected_move_bps),
+                    "projected_net_edge_bps": str(projected_net_edge_bps),
                     "invalidation_level": str(prior_low),
                     "entry_style": "pullback_reclaim",
                 }
             )
             if position_qty <= 0 and candle_low <= reclaim_level and close > reclaim_level and close > candle_open:
+                if expected_move_bps < required_move_bps:
+                    return "hold", "expected_move_below_cost_threshold", metrics
                 if trend_bps < config.min_trend_bps:
                     return "hold", "trend_filter_failed", metrics
                 if atr_bps < config.min_atr_bps:

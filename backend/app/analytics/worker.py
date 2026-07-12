@@ -23,6 +23,7 @@ class AnalyticsWorker:
         self._stop = asyncio.Event()
         self._last_event_key_at: dict[str, int] = {}
         self._last_system_success_at = 0.0
+        self._last_snapshot_at = 0.0
 
     async def stop(self) -> None:
         self._stop.set()
@@ -53,10 +54,12 @@ class AnalyticsWorker:
         for event in events:
             self.recent_events.appendleft(event)
 
-        await self.db.save_analytics_snapshot("summary", summary)
-        await self.db.save_analytics_snapshots(_family_snapshots(summary))
-        await self.db.save_analytics_events(events)
         now = time.time()
+        if now - self._last_snapshot_at >= settings.analytics_snapshot_interval_seconds:
+            self._last_snapshot_at = now
+            await self.db.save_analytics_snapshot("summary", summary)
+            await self.db.save_analytics_snapshots(_family_snapshots(summary))
+        await self.db.save_analytics_events(events)
         if now - self._last_system_success_at >= 60:
             self._last_system_success_at = now
             await self.db.record_system_event(

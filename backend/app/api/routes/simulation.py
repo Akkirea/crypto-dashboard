@@ -33,6 +33,8 @@ class SimulatedMarketOrderRequest(BaseModel):
     symbol: str = Field(..., max_length=32)
     side: str = Field(..., pattern="^(buy|sell)$")
     quantity: Decimal = Field(..., gt=0)
+    order_type: str = Field(default="market", pattern="^(market|limit)$")
+    limit_price: Optional[Decimal] = Field(default=None, gt=0)
 
 
 class BacktestRequest(BaseModel):
@@ -91,6 +93,7 @@ class AutomationRequest(BaseModel):
     max_fee_burn_per_day: Decimal = Field(default=Decimal("5"), ge=0, le=1000000)
     pause_after_loss_streak: int = Field(default=3, ge=1, le=10000)
     profit_only_exits: bool = False
+    min_reward_to_cost: Decimal = Field(default=Decimal("3"), ge=1, le=20)
 
 
 @router.get("/config")
@@ -106,7 +109,8 @@ async def simulation_config() -> dict[str, object]:
         "default_exchange": settings.simulation_default_exchange,
         "fill_model": {
             "price_source": settings.simulation_fill_price_source,
-            "fee_bps": settings.simulation_fee_bps,
+            "taker_fee_bps": settings.simulation_fee_bps,
+            "maker_fee_bps": settings.simulation_maker_fee_bps,
             "slippage_bps": settings.simulation_slippage_bps,
             "latency_ms": settings.simulation_latency_ms,
         },
@@ -249,6 +253,7 @@ async def start_automation(request: Request, payload: AutomationRequest) -> dict
                 max_fee_burn_per_day=payload.max_fee_burn_per_day,
                 pause_after_loss_streak=payload.pause_after_loss_streak,
                 profit_only_exits=payload.profit_only_exits,
+                min_reward_to_cost=payload.min_reward_to_cost,
             )
         )
     except ValueError as exc:
@@ -458,23 +463,40 @@ async def submit_order(
         bid_price = Decimal(str(book.bid_price))
         ask_price = Decimal(str(book.ask_price))
 
-    result = await request.app.state.db.create_simulation_market_order(
-        portfolio_id=order.portfolio_id,
-        exchange=exchange,
-        symbol=symbol,
-        side=order.side,
-        quantity=order.quantity,
-        bid_price=bid_price,
-        ask_price=ask_price,
-        payload={
-            "fill_model": {
-                "price_source": settings.simulation_fill_price_source,
-                "fee_bps": settings.simulation_fee_bps,
-                "slippage_bps": settings.simulation_slippage_bps,
-                "latency_ms": settings.simulation_latency_ms,
-            }
-        },
-    )
+    payload = {
+        "fill_model": {
+            "price_source": settings.simulation_fill_price_source,
+            "taker_fee_bps": settings.simulation_fee_bps,
+            "maker_fee_bps": settings.simulation_maker_fee_bps,
+            "slippage_bps": settings.simulation_slippage_bps,
+            "latency_ms": settings.simulation_latency_ms,
+        }
+    }
+    if order.order_type == "limit":
+        if order.limit_price is None:
+            raise HTTPException(status_code=422, detail="limit_price is required for limit orders")
+        result = await request.app.state.db.create_simulation_limit_order(
+            portfolio_id=order.portfolio_id,
+            exchange=exchange,
+            symbol=symbol,
+            side=order.side,
+            quantity=order.quantity,
+            limit_price=order.limit_price,
+            bid_price=bid_price,
+            ask_price=ask_price,
+            payload=payload,
+        )
+    else:
+        result = await request.app.state.db.create_simulation_market_order(
+            portfolio_id=order.portfolio_id,
+            exchange=exchange,
+            symbol=symbol,
+            side=order.side,
+            quantity=order.quantity,
+            bid_price=bid_price,
+            ask_price=ask_price,
+            payload=payload,
+        )
     return result
 
 

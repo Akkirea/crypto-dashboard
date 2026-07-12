@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     symbols: str = "BTCUSDT,ETHUSDT,SOLUSDT"
     kline_intervals: str = "1m,5m,15m,1h"
     analytics_interval_seconds: float = 5.0
+    analytics_snapshot_interval_seconds: float = 60.0
+    analytics_snapshots_max_rows_per_family: int = 500
     spread_widening_alert_ratio: float = 3.0
     volatility_alert_regimes: str = "elevated,extreme"
     trend_alert_abs_score: float = 5.0
@@ -31,6 +33,7 @@ class Settings(BaseSettings):
     simulation_default_exchange: str = "binance"
     simulation_fill_price_source: str = "mid"
     simulation_fee_bps: float = 10.0
+    simulation_maker_fee_bps: float = 2.0
     simulation_slippage_bps: float = 1.0
     simulation_latency_ms: int = 250
     simulation_initial_cash: float = 100000.0
@@ -50,7 +53,7 @@ class Settings(BaseSettings):
     order_book_retention_hours: int = 1
     candles_retention_days: int = 30
     analytics_events_retention_days: int = 7
-    analytics_snapshots_retention_days: int = 7
+    analytics_snapshots_retention_days: int = 1
     system_events_retention_days: int = 7
     retention_delete_limit: int = 250000
     order_book_persist_interval_ms: int = 15000
