@@ -33,7 +33,7 @@ import {
 } from "@/lib/simulationTypes";
 
 const STRATEGY_INTERVALS: SimulationInterval[] = ["1m", "5m", "15m", "1h"];
-type AutomationMode = "exploration" | "candidate";
+type AutomationMode = "exploration" | "balanced" | "candidate";
 
 const AUTOMATION_PRESETS: Record<
   AutomationMode,
@@ -112,6 +112,43 @@ const AUTOMATION_PRESETS: Record<
       min_reward_to_cost: 1.5
     }
   },
+  balanced: {
+    label: "Balanced",
+    description: "Moderate 5m paper collection with maker entries and cost discipline.",
+    target: "5-20 trades/day",
+    payload: {
+      interval: "5m",
+      poll_seconds: 30,
+      notional: 10,
+      max_position_notional: 50,
+      momentum_window: 12,
+      breakout_bps: 10,
+      exit_window: 6,
+      trend_window: 24,
+      min_trend_bps: -75,
+      atr_window: 12,
+      atr_target_multiplier: 1.1,
+      min_take_profit_bps: 45,
+      max_take_profit_bps: 120,
+      min_close_location: 0.45,
+      min_atr_bps: 4,
+      min_expected_move_bps: 35,
+      min_volume_ratio: 0.8,
+      stop_loss_bps: 75,
+      trailing_stop_bps: 50,
+      take_profit_bps: 70,
+      min_holding_minutes: 10,
+      max_holding_minutes: 90,
+      cooldown_minutes: 3,
+      max_spread_bps: 10,
+      daily_max_loss: 15,
+      max_trades_per_day: 20,
+      max_fee_burn_per_day: 4,
+      pause_after_loss_streak: 5,
+      profit_only_exits: false,
+      min_reward_to_cost: 2
+    }
+  },
   candidate: {
     label: "Candidate",
     description: "Stricter 15m forward validation for signals that survive costs.",
@@ -170,7 +207,7 @@ export default function SimulationPage() {
   const [experiments, setExperiments] = useState<SimulationExperiment[]>([]);
   const [automation, setAutomation] = useState<AutomationStatus | null>(null);
   const [automationSignals, setAutomationSignals] = useState<AutomationSignal[]>([]);
-  const [automationMode, setAutomationMode] = useState<AutomationMode>("candidate");
+  const [automationMode, setAutomationMode] = useState<AutomationMode>("balanced");
   const [strategyInterval, setStrategyInterval] = useState<SimulationInterval>("5m");
   const [backtestStrategy, setBacktestStrategy] = useState<BacktestStrategy>("pullback_reclaim");
   const [shortWindow, setShortWindow] = useState("5");

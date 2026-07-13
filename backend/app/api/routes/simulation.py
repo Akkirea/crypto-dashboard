@@ -54,7 +54,7 @@ class BacktestRequest(BaseModel):
 class AutomationRequest(BaseModel):
     portfolio_id: str = Field(default="default", max_length=64)
     symbol: str = Field(default="BTCUSDT", max_length=32)
-    mode: str = Field(default="candidate", pattern="^(exploration|candidate)$")
+    mode: str = Field(default="candidate", pattern="^(exploration|balanced|candidate)$")
     interval: str = Field(default="5m", pattern=INTERVAL_PATTERN)
     strategy: str = Field(default="momentum_breakout", pattern="^(sma_cross|momentum_breakout|pullback_reclaim)$")
     poll_seconds: float = Field(default=settings.simulation_automation_poll_seconds, ge=5, le=3600)
@@ -134,6 +134,13 @@ async def simulation_config() -> dict[str, object]:
                 "exploration": {
                     "purpose": "higher-frequency simulated data collection",
                     "target_trades_per_day": "15-40",
+                    "interval": "5m",
+                    "notional": 10,
+                    "max_position_notional": 50,
+                },
+                "balanced": {
+                    "purpose": "moderate-frequency paper data collection with cost discipline",
+                    "target_trades_per_day": "5-20",
                     "interval": "5m",
                     "notional": 10,
                     "max_position_notional": 50,

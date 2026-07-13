@@ -30,7 +30,7 @@ export type SimulationConfig = {
     max_position_notional: number;
     poll_seconds: number;
     modes?: Record<
-      "exploration" | "candidate",
+      "exploration" | "balanced" | "candidate",
       {
         purpose: string;
         target_trades_per_day: string;
@@ -235,7 +235,7 @@ export type AutomationStatus = {
     portfolio_id: string;
     exchange: string;
     symbol: string;
-    mode: "exploration" | "candidate";
+    mode: "exploration" | "balanced" | "candidate";
     interval: SimulationInterval;
     strategy: BacktestStrategy;
     enabled: boolean;

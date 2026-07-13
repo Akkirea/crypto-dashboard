@@ -95,7 +95,7 @@ class AutomatedSimulationWorker:
         async with self._lock:
             if config.symbol not in self.state.symbols:
                 raise ValueError(f"unsupported symbol: {config.symbol}")
-            if config.mode not in {"exploration", "candidate"}:
+            if config.mode not in {"exploration", "balanced", "candidate"}:
                 raise ValueError(f"unsupported automation mode: {config.mode}")
             if config.strategy not in {"sma_cross", "momentum_breakout", "pullback_reclaim"}:
                 raise ValueError(f"unsupported strategy: {config.strategy}")
@@ -539,12 +539,17 @@ class AutomatedSimulationWorker:
         )
         round_trip_cost_bps = _estimated_round_trip_cost_bps()
         cost_multiple = max(Decimal("1.5"), config.min_reward_to_cost)
+        atr_floor_multiplier = Decimal("0.50")
         if config.mode == "exploration":
             cost_multiple = max(Decimal("1.5"), config.min_reward_to_cost / Decimal("2"))
+            atr_floor_multiplier = Decimal("0.25")
+        elif config.mode == "balanced":
+            cost_multiple = max(Decimal("2"), config.min_reward_to_cost)
+            atr_floor_multiplier = Decimal("0.35")
         required_move_bps = max(
             config.min_expected_move_bps,
             round_trip_cost_bps * cost_multiple,
-            atr_bps * (Decimal("0.25") if config.mode == "exploration" else Decimal("0.50")),
+            atr_bps * atr_floor_multiplier,
         )
         metrics = {
             "close": str(close),

@@ -248,6 +248,42 @@ def test_automation_pullback_reclaim_requires_cost_adjusted_upside() -> None:
     assert Decimal(metrics["expected_move_bps"]) < Decimal(metrics["required_move_bps"])
 
 
+def test_automation_balanced_mode_uses_two_times_cost_gate() -> None:
+    worker = AutomatedSimulationWorker(MarketState(["AAAUSDT"]), db=None)  # type: ignore[arg-type]
+    closes = [Decimal("100"), Decimal("100.2"), Decimal("100.3"), Decimal("100.25"), Decimal("100.12")]
+    candles = [_candle(index, close) for index, close in enumerate(closes)]
+    for candle in candles[1:4]:
+        candle["low"] = Decimal("100.00")
+        candle["high"] = Decimal("100.80")
+    candles[-1]["open"] = Decimal("100.05")
+    candles[-1]["low"] = Decimal("100.00")
+    candles[-1]["high"] = Decimal("100.15")
+    candles[-1]["volume"] = Decimal("150")
+
+    signal, reason, metrics = worker._compute_signal(
+        AutomationConfig(
+            symbol="AAAUSDT",
+            strategy="pullback_reclaim",
+            mode="balanced",
+            momentum_window=3,
+            trend_window=3,
+            breakout_bps=Decimal("0"),
+            min_trend_bps=Decimal("-100"),
+            min_expected_move_bps=Decimal("0"),
+            min_volume_ratio=Decimal("0"),
+            min_atr_bps=Decimal("0"),
+            min_close_location=Decimal("0"),
+            min_reward_to_cost=Decimal("2"),
+        ),
+        candles,
+        Decimal("0"),
+    )
+
+    assert signal == "buy"
+    assert reason == "pullback_reclaimed_recent_low"
+    assert Decimal(metrics["required_move_bps"]) == Decimal("44.0")
+
+
 @pytest.mark.asyncio
 async def test_position_manager_blocks_reentry_during_cooldown() -> None:
     worker = AutomatedSimulationWorker(MarketState(["AAAUSDT"]), db=None)  # type: ignore[arg-type]
