@@ -1956,6 +1956,72 @@ class Database:
                 )
                 return _decode_json_fields(dict(order), "payload")
 
+    async def cancel_stale_simulation_limit_orders(
+        self,
+        *,
+        portfolio_id: str,
+        exchange: str,
+        symbol: str,
+        older_than_minutes: Decimal,
+        mark_price: Decimal,
+        cancel_on_support_break: bool = True,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        if not self.pool:
+            return []
+        exchange = exchange.lower()
+        symbol = symbol.upper()
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                WITH candidates AS (
+                  SELECT id,
+                         CASE
+                           WHEN submitted_at < now() - ($4::numeric * interval '1 minute')
+                             THEN 'entry_limit_ttl_expired'
+                           WHEN $6::boolean
+                            AND side = 'buy'
+                            AND NULLIF(payload #>> '{signal_metrics,support_level}', '')::numeric IS NOT NULL
+                            AND $5::numeric < NULLIF(payload #>> '{signal_metrics,support_level}', '')::numeric
+                             THEN 'entry_support_broken_before_fill'
+                           ELSE NULL
+                         END AS cancel_reason
+                  FROM simulation_orders
+                  WHERE portfolio_id = $1
+                    AND exchange = $2
+                    AND symbol = $3
+                    AND order_type = 'limit'
+                    AND status = 'submitted'
+                    AND COALESCE(payload->>'source', '') = 'automated_simulation'
+                  ORDER BY submitted_at
+                  LIMIT $7
+                )
+                UPDATE simulation_orders AS orders
+                SET status = 'cancelled',
+                    rejection_reason = candidates.cancel_reason,
+                    payload = orders.payload || jsonb_build_object(
+                      'cancel_reason', candidates.cancel_reason,
+                      'cancelled_at', now()
+                    )
+                FROM candidates
+                WHERE orders.id = candidates.id
+                  AND candidates.cancel_reason IS NOT NULL
+                RETURNING orders.id, orders.experiment_id, orders.portfolio_id, orders.exchange,
+                          orders.symbol, orders.side, orders.order_type, orders.status,
+                          orders.requested_quantity, orders.filled_quantity, orders.limit_price,
+                          orders.fill_price, orders.fee, orders.submitted_at, orders.filled_at,
+                          orders.rejection_reason, orders.payload
+                """,
+                portfolio_id,
+                exchange,
+                symbol,
+                older_than_minutes,
+                mark_price,
+                cancel_on_support_break,
+                limit,
+            )
+        return [_decode_json_fields(dict(row), "payload") for row in rows]
+
     async def process_simulation_limit_orders(
         self,
         *,

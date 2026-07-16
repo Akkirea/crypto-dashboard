@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 
 from app.services.market_state import MarketState
-from app.simulation.automation import AutomatedSimulationWorker, AutomationConfig
+from app.simulation.automation import AutomatedSimulationWorker, AutomationConfig, _interval_minutes
 
 
 def _candle(index: int, close: Decimal) -> dict[str, object]:
@@ -282,6 +282,12 @@ def test_automation_balanced_mode_uses_two_times_cost_gate() -> None:
     assert signal == "buy"
     assert reason == "pullback_reclaimed_recent_low"
     assert Decimal(metrics["required_move_bps"]) == Decimal("44.0")
+
+
+def test_interval_minutes_supports_minute_and_hour_frames() -> None:
+    assert _interval_minutes("5m") == Decimal("5")
+    assert _interval_minutes("15m") == Decimal("15")
+    assert _interval_minutes("1h") == Decimal("60")
 
 
 @pytest.mark.asyncio

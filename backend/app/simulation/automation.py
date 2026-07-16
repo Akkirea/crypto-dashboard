@@ -55,6 +55,8 @@ class AutomationConfig:
     pause_after_loss_streak: int = 3
     profit_only_exits: bool = False
     min_reward_to_cost: Decimal = Decimal("3")
+    limit_order_ttl_candles: int = 2
+    cancel_entry_on_support_break: bool = True
     experiment_id: Optional[int] = None
 
 
@@ -194,6 +196,8 @@ class AutomatedSimulationWorker:
         payload["daily_max_loss"] = str(config.daily_max_loss)
         payload["max_fee_burn_per_day"] = str(config.max_fee_burn_per_day)
         payload["min_reward_to_cost"] = str(config.min_reward_to_cost)
+        payload["limit_order_ttl_candles"] = config.limit_order_ttl_candles
+        payload["cancel_entry_on_support_break"] = config.cancel_entry_on_support_break
         return payload
 
     async def evaluate_once(self) -> Optional[dict[str, Any]]:
@@ -243,13 +247,29 @@ class AutomatedSimulationWorker:
 
         book = await self._book(config.symbol, config.exchange)
         if book is not None:
+            bid_price = Decimal(str(book["bid_price"]))
+            ask_price = Decimal(str(book["ask_price"]))
+            mark_price = (bid_price + ask_price) / Decimal("2")
+            cancelled_orders = await self.db.cancel_stale_simulation_limit_orders(
+                portfolio_id=config.portfolio_id,
+                exchange=config.exchange,
+                symbol=config.symbol,
+                older_than_minutes=_interval_minutes(config.interval) * Decimal(config.limit_order_ttl_candles),
+                mark_price=mark_price,
+                cancel_on_support_break=config.cancel_entry_on_support_break,
+            )
             await self.db.process_simulation_limit_orders(
                 portfolio_id=config.portfolio_id,
                 exchange=config.exchange,
                 symbol=config.symbol,
-                bid_price=Decimal(str(book["bid_price"])),
-                ask_price=Decimal(str(book["ask_price"])),
+                bid_price=bid_price,
+                ask_price=ask_price,
             )
+            if cancelled_orders:
+                logger.info(
+                    "cancelled stale simulated limit orders",
+                    extra={"orders": len(cancelled_orders), "symbol": config.symbol},
+                )
 
         portfolio = await self.db.fetch_simulation_portfolio(
             portfolio_id=config.portfolio_id,
@@ -951,6 +971,14 @@ def _elapsed_minutes(start: datetime, end: datetime) -> Decimal:
     if end.tzinfo is None:
         end = end.replace(tzinfo=timezone.utc)
     return Decimal(str(max(0.0, (end - start).total_seconds()) / 60))
+
+
+def _interval_minutes(interval: str) -> Decimal:
+    if interval.endswith("m"):
+        return Decimal(interval[:-1])
+    if interval.endswith("h"):
+        return Decimal(interval[:-1]) * Decimal("60")
+    return Decimal("5")
 
 
 def _estimated_round_trip_cost_bps() -> Decimal:

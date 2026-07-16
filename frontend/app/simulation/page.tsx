@@ -72,6 +72,8 @@ const AUTOMATION_PRESETS: Record<
       pause_after_loss_streak: number;
       profit_only_exits: boolean;
       min_reward_to_cost: number;
+      limit_order_ttl_candles: number;
+      cancel_entry_on_support_break: boolean;
     };
   }
 > = {
@@ -109,7 +111,9 @@ const AUTOMATION_PRESETS: Record<
       max_fee_burn_per_day: 8,
       pause_after_loss_streak: 6,
       profit_only_exits: false,
-      min_reward_to_cost: 1.5
+      min_reward_to_cost: 1.5,
+      limit_order_ttl_candles: 2,
+      cancel_entry_on_support_break: true
     }
   },
   balanced: {
@@ -146,7 +150,9 @@ const AUTOMATION_PRESETS: Record<
       max_fee_burn_per_day: 4,
       pause_after_loss_streak: 5,
       profit_only_exits: false,
-      min_reward_to_cost: 2
+      min_reward_to_cost: 2,
+      limit_order_ttl_candles: 2,
+      cancel_entry_on_support_break: true
     }
   },
   candidate: {
@@ -183,7 +189,9 @@ const AUTOMATION_PRESETS: Record<
       max_fee_burn_per_day: 5,
       pause_after_loss_streak: 3,
       profit_only_exits: false,
-      min_reward_to_cost: 3
+      min_reward_to_cost: 3,
+      limit_order_ttl_candles: 2,
+      cancel_entry_on_support_break: true
     }
   }
 };
@@ -508,7 +516,9 @@ export default function SimulationPage() {
           max_fee_burn_per_day: preset.payload.max_fee_burn_per_day,
           pause_after_loss_streak: preset.payload.pause_after_loss_streak,
           profit_only_exits: preset.payload.profit_only_exits,
-          min_reward_to_cost: preset.payload.min_reward_to_cost
+          min_reward_to_cost: preset.payload.min_reward_to_cost,
+          limit_order_ttl_candles: preset.payload.limit_order_ttl_candles,
+          cancel_entry_on_support_break: preset.payload.cancel_entry_on_support_break
         })
       });
       if (!response.ok) {
@@ -1193,9 +1203,9 @@ function AutomationPanel({
           detail="Daily simulated fees"
         />
         <Metric
-          label="Loss Streak"
-          value={`${config?.pause_after_loss_streak ?? "—"} losses`}
-          detail="Pause threshold"
+          label="Limit TTL"
+          value={`${config?.limit_order_ttl_candles ?? "—"} candles`}
+          detail={config?.cancel_entry_on_support_break ? "Cancel on support break" : "Support cancel off"}
         />
       </section>
 

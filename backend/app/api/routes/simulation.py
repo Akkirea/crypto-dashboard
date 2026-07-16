@@ -94,6 +94,8 @@ class AutomationRequest(BaseModel):
     pause_after_loss_streak: int = Field(default=3, ge=1, le=10000)
     profit_only_exits: bool = False
     min_reward_to_cost: Decimal = Field(default=Decimal("3"), ge=1, le=20)
+    limit_order_ttl_candles: int = Field(default=2, ge=1, le=20)
+    cancel_entry_on_support_break: bool = True
 
 
 @router.get("/config")
@@ -261,6 +263,8 @@ async def start_automation(request: Request, payload: AutomationRequest) -> dict
                 pause_after_loss_streak=payload.pause_after_loss_streak,
                 profit_only_exits=payload.profit_only_exits,
                 min_reward_to_cost=payload.min_reward_to_cost,
+                limit_order_ttl_candles=payload.limit_order_ttl_candles,
+                cancel_entry_on_support_break=payload.cancel_entry_on_support_break,
             )
         )
     except ValueError as exc:

@@ -270,6 +270,8 @@ export type AutomationStatus = {
     pause_after_loss_streak: number;
     profit_only_exits: boolean;
     min_reward_to_cost?: string | number;
+    limit_order_ttl_candles?: number;
+    cancel_entry_on_support_break?: boolean;
     experiment_id: number | null;
   };
   last_signal: AutomationSignal | null;
